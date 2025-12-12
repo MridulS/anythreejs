@@ -39,8 +39,8 @@ class Renderer(anywidget.AnyWidget):
     _camera_data = traitlets.Dict({}).tag(sync=True)
     _controls_data = traitlets.List([]).tag(sync=True)
 
-    width = traitlets.Int(600).tag(sync=True)
-    height = traitlets.Int(400).tag(sync=True)
+    width = traitlets.CInt(600).tag(sync=True)
+    height = traitlets.CInt(400).tag(sync=True)
 
     antialias = traitlets.Bool(True).tag(sync=True)
     alpha = traitlets.Bool(False).tag(sync=True)
@@ -51,8 +51,6 @@ class Renderer(anywidget.AnyWidget):
 
     # Enable/disable picking
     enable_picking = traitlets.Bool(True).tag(sync=True)
-
-    layout = traitlets.Any(None)
 
     @traitlets.validate("width")
     def _validate_width(self, proposal):
