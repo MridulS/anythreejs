@@ -59,14 +59,14 @@ class BufferGeometry(ThreeJSBase):
         self._index = value
         self._notify("index", old, value)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
         data = {"type": self._type, "uuid": self._uuid}
 
         if self._attributes:
             attrs = {}
             for name, attr in self._attributes.items():
                 if hasattr(attr, "to_dict"):
-                    attrs[name] = attr.to_dict()
+                    attrs[name] = attr.to_dict(buffer_manager=buffer_manager)
                 elif hasattr(attr, "array"):
                     arr = attr.array
                     if hasattr(arr, "tolist"):
@@ -81,7 +81,7 @@ class BufferGeometry(ThreeJSBase):
 
         if self._index is not None:
             if hasattr(self._index, "to_dict"):
-                data["index"] = self._index.to_dict()
+                data["index"] = self._index.to_dict(buffer_manager=buffer_manager)
             elif hasattr(self._index, "array"):
                 arr = self._index.array
                 if hasattr(arr, "tolist"):
@@ -109,6 +109,14 @@ class BoxGeometry(ThreeJSBase):
         **kwargs,
     ):
         super().__init__()
+        if width <= 0 or height <= 0 or depth <= 0:
+            raise ValueError(
+                f"width, height, and depth must be positive, got width={width}, height={height}, depth={depth}"
+            )
+        if widthSegments < 1 or heightSegments < 1 or depthSegments < 1:
+            raise ValueError(
+                f"segments must be at least 1, got widthSegments={widthSegments}, heightSegments={heightSegments}, depthSegments={depthSegments}"
+            )
         self.width = width
         self.height = height
         self.depth = depth
@@ -116,7 +124,7 @@ class BoxGeometry(ThreeJSBase):
         self.heightSegments = heightSegments
         self.depthSegments = depthSegments
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
         return {
             "type": self._type,
             "uuid": self._uuid,
@@ -150,6 +158,12 @@ class SphereGeometry(ThreeJSBase):
         **kwargs,
     ):
         super().__init__()
+        if radius <= 0:
+            raise ValueError(f"radius must be positive, got {radius}")
+        if widthSegments < 3 or heightSegments < 2:
+            raise ValueError(
+                f"widthSegments must be at least 3 and heightSegments at least 2, got widthSegments={widthSegments}, heightSegments={heightSegments}"
+            )
         self.radius = radius
         self.widthSegments = widthSegments
         self.heightSegments = heightSegments
@@ -158,7 +172,7 @@ class SphereGeometry(ThreeJSBase):
         self.thetaStart = thetaStart
         self.thetaLength = thetaLength
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
         return {
             "type": self._type,
             "uuid": self._uuid,
@@ -194,7 +208,7 @@ class PlaneGeometry(ThreeJSBase):
         self.widthSegments = widthSegments
         self.heightSegments = heightSegments
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
         return {
             "type": self._type,
             "uuid": self._uuid,
@@ -235,7 +249,7 @@ class CylinderGeometry(ThreeJSBase):
         self.thetaStart = thetaStart
         self.thetaLength = thetaLength
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
         return {
             "type": self._type,
             "uuid": self._uuid,
@@ -274,7 +288,7 @@ class TorusGeometry(ThreeJSBase):
         self.tubularSegments = tubularSegments
         self.arc = arc
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
         return {
             "type": self._type,
             "uuid": self._uuid,
@@ -306,7 +320,7 @@ class EdgesGeometry(ThreeJSBase):
         self._geometry = value
         self._notify("geometry", old, value)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
         data = {
             "type": self._type,
             "uuid": self._uuid,
@@ -347,7 +361,7 @@ class LineGeometry(ThreeJSBase):
         self._colors = value
         self._notify("colors", old, value)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
         data = {
             "type": self._type,
             "uuid": self._uuid,

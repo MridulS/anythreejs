@@ -47,12 +47,12 @@ class Mesh(Object3D):
         if self._material:
             self._material._set_renderer(renderer)
 
-    def to_dict(self) -> dict[str, Any]:
-        data = super().to_dict()
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
+        data = super().to_dict(buffer_manager=buffer_manager)
         if self._geometry:
-            data["geometry"] = self._geometry.to_dict()
+            data["geometry"] = self._geometry.to_dict(buffer_manager=buffer_manager)
         if self._material:
-            data["material"] = self._material.to_dict()
+            data["material"] = self._material.to_dict(buffer_manager=buffer_manager)
         return data
 
 
@@ -97,12 +97,12 @@ class Points(Object3D):
         if self._material:
             self._material._set_renderer(renderer)
 
-    def to_dict(self) -> dict[str, Any]:
-        data = super().to_dict()
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
+        data = super().to_dict(buffer_manager=buffer_manager)
         if self._geometry:
-            data["geometry"] = self._geometry.to_dict()
+            data["geometry"] = self._geometry.to_dict(buffer_manager=buffer_manager)
         if self._material:
-            data["material"] = self._material.to_dict()
+            data["material"] = self._material.to_dict(buffer_manager=buffer_manager)
         return data
 
 
@@ -147,12 +147,12 @@ class Line(Object3D):
         if self._material:
             self._material._set_renderer(renderer)
 
-    def to_dict(self) -> dict[str, Any]:
-        data = super().to_dict()
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
+        data = super().to_dict(buffer_manager=buffer_manager)
         if self._geometry:
-            data["geometry"] = self._geometry.to_dict()
+            data["geometry"] = self._geometry.to_dict(buffer_manager=buffer_manager)
         if self._material:
-            data["material"] = self._material.to_dict()
+            data["material"] = self._material.to_dict(buffer_manager=buffer_manager)
         return data
 
 
@@ -193,10 +193,10 @@ class Sprite(Object3D):
         self._material = value
         self._notify("material", old, value)
 
-    def to_dict(self) -> dict[str, Any]:
-        data = super().to_dict()
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
+        data = super().to_dict(buffer_manager=buffer_manager)
         if self._material:
-            data["material"] = self._material.to_dict()
+            data["material"] = self._material.to_dict(buffer_manager=buffer_manager)
         return data
 
 
@@ -241,10 +241,10 @@ class Line2(Object3D):
         if self._material:
             self._material._set_renderer(renderer)
 
-    def to_dict(self) -> dict[str, Any]:
-        data = super().to_dict()
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
+        data = super().to_dict(buffer_manager=buffer_manager)
         if self._geometry:
-            data["geometry"] = self._geometry.to_dict()
+            data["geometry"] = self._geometry.to_dict(buffer_manager=buffer_manager)
         if self._material:
-            data["material"] = self._material.to_dict()
+            data["material"] = self._material.to_dict(buffer_manager=buffer_manager)
         return data

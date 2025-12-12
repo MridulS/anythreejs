@@ -105,8 +105,13 @@ class ThreeJSBase:
         """Set the parent renderer for sync."""
         self._parent_renderer = renderer
 
-    def to_dict(self) -> dict[str, Any]:
-        """Serialize to dictionary for JSON transport."""
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
+        """
+        Serialize to dictionary for JSON transport.
+
+        Args:
+            buffer_manager: Optional BufferManager for binary data transfer
+        """
         return {"type": self._type, "uuid": self._uuid}
 
 
@@ -140,28 +145,43 @@ class Object3D(ThreeJSBase):
 
     @position.setter
     def position(self, value):
+        value_list = list(value)
+        if len(value_list) != 3:
+            raise ValueError(
+                f"position must have exactly 3 elements, got {len(value_list)}"
+            )
         old = self._position
-        self._position = list(value)
+        self._position = value_list
         self._notify("position", old, self._position)
 
     @property
-    def rotation(self) -> list:
-        return self._rotation
+    def rotation(self) -> tuple:
+        return tuple(self._rotation)
 
     @rotation.setter
     def rotation(self, value):
+        value_list = list(value)
+        if len(value_list) != 3:
+            raise ValueError(
+                f"rotation must have exactly 3 elements, got {len(value_list)}"
+            )
         old = self._rotation
-        self._rotation = list(value)
+        self._rotation = value_list
         self._notify("rotation", old, self._rotation)
 
     @property
-    def scale(self) -> list:
-        return self._scale
+    def scale(self) -> tuple:
+        return tuple(self._scale)
 
     @scale.setter
     def scale(self, value):
+        value_list = list(value)
+        if len(value_list) != 3:
+            raise ValueError(
+                f"scale must have exactly 3 elements, got {len(value_list)}"
+            )
         old = self._scale
-        self._scale = list(value)
+        self._scale = value_list
         self._notify("scale", old, self._scale)
 
     @property
@@ -186,20 +206,23 @@ class Object3D(ThreeJSBase):
 
     def rotateX(self, angle: float) -> "Object3D":
         """Rotate around X axis by angle (radians)."""
+        old = self._rotation.copy()
         self._rotation[0] += angle
-        self._notify("rotation", None, self._rotation)
+        self._notify("rotation", old, self._rotation)
         return self
 
     def rotateY(self, angle: float) -> "Object3D":
         """Rotate around Y axis by angle (radians)."""
+        old = self._rotation.copy()
         self._rotation[1] += angle
-        self._notify("rotation", None, self._rotation)
+        self._notify("rotation", old, self._rotation)
         return self
 
     def rotateZ(self, angle: float) -> "Object3D":
         """Rotate around Z axis by angle (radians)."""
+        old = self._rotation.copy()
         self._rotation[2] += angle
-        self._notify("rotation", None, self._rotation)
+        self._notify("rotation", old, self._rotation)
         return self
 
     @property
@@ -233,8 +256,8 @@ class Object3D(ThreeJSBase):
         for child in self._children:
             child._set_renderer(renderer)
 
-    def to_dict(self) -> dict[str, Any]:
-        data = super().to_dict()
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
+        data = super().to_dict(buffer_manager=buffer_manager)
         data.update(
             {
                 "position": self._position,
@@ -245,5 +268,7 @@ class Object3D(ThreeJSBase):
             }
         )
         if self._children:
-            data["children"] = [child.to_dict() for child in self._children]
+            data["children"] = [
+                child.to_dict(buffer_manager=buffer_manager) for child in self._children
+            ]
         return data

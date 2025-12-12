@@ -105,9 +105,10 @@ class OrbitControls(ThreeJSBase):
         self._autoRotate = value
         self._notify("autoRotate", old, value)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
         return {
             "type": self._type,
+            "uuid": self._uuid,
             "target": self._target,
             "enableDamping": self._enableDamping,
             "dampingFactor": self._dampingFactor,
@@ -135,7 +136,9 @@ class TrackballControls(ThreeJSBase):
 
     @controlling.setter
     def controlling(self, value):
+        old = self._controlling
         self._controlling = value
+        self._notify("controlling", old, value)
 
     @property
     def target(self) -> tuple:
@@ -147,8 +150,8 @@ class TrackballControls(ThreeJSBase):
         self._target = list(value)
         self._notify("target", old, self._target)
 
-    def to_dict(self) -> dict[str, Any]:
-        return {"type": self._type, "target": self._target}
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
+        return {"type": self._type, "uuid": self._uuid, "target": self._target}
 
 
 class Picker(ThreeJSBase):
@@ -275,7 +278,7 @@ class Picker(ThreeJSBase):
         self._modifiers = list(value)
         self._notify("modifiers", old, self._modifiers)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
         result = {
             "type": self._type,
             "uuid": self._uuid,

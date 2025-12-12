@@ -35,7 +35,7 @@ class TextTexture(ThreeJSBase):
         self._string = value
         self._notify("string", old, value)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
         return {
             "type": self._type,
             "uuid": self._uuid,
@@ -107,7 +107,7 @@ class DataTexture(ThreeJSBase):
         self._height = value
         self._notify("height", old, value)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
         import numpy as np
 
         result = {
@@ -136,8 +136,21 @@ class DataTexture(ThreeJSBase):
                 height = d.shape[0]
                 width = d.shape[1]
 
-            # Flatten for serialization
-            result["data"] = d.flatten().tolist()
+            # Use binary buffer transfer if buffer_manager is available
+            if buffer_manager is not None:
+                # Flatten and ensure contiguous for efficient transfer
+                flat_data = d.flatten()
+                if not flat_data.flags.c_contiguous:
+                    flat_data = np.ascontiguousarray(flat_data)
+
+                # Register buffer and store reference
+                buffer_id = buffer_manager.register_buffer(flat_data)
+                result["bufferRef"] = buffer_id
+                result["dataType"] = str(flat_data.dtype)
+                result["count"] = len(flat_data)
+            else:
+                # Use JSON serialization
+                result["data"] = d.flatten().tolist()
 
         if width is not None:
             result["width"] = int(width)

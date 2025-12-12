@@ -46,6 +46,12 @@ class Material(ThreeJSBase):
 
     @color.setter
     def color(self, value: str):
+        # Basic color validation - must start with # or be a named color
+        if isinstance(value, str):
+            if not (value.startswith("#") or value.isalpha()):
+                raise ValueError(
+                    f"Invalid color format: {value}. Expected hex color (#RRGGBB) or color name"
+                )
         old = self._color
         self._color = value
         self._notify("color", old, value)
@@ -56,6 +62,8 @@ class Material(ThreeJSBase):
 
     @opacity.setter
     def opacity(self, value: float):
+        if not 0.0 <= value <= 1.0:
+            raise ValueError(f"opacity must be between 0.0 and 1.0, got {value}")
         old = self._opacity
         self._opacity = value
         self._notify("opacity", old, value)
@@ -110,7 +118,7 @@ class Material(ThreeJSBase):
         self._depthWrite = value
         self._notify("depthWrite", old, value)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
         return {
             "type": self._type,
             "uuid": self._uuid,
@@ -165,12 +173,14 @@ class MeshBasicMaterial(Material):
         self._map = value
         self._notify("map", old, value)
 
-    def to_dict(self) -> dict[str, Any]:
-        data = super().to_dict()
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
+        data = super().to_dict(buffer_manager=buffer_manager)
         data.update({"wireframe": self._wireframe, "vertexColors": self._vertexColors})
         if self._map is not None:
             data["map"] = (
-                self._map.to_dict() if hasattr(self._map, "to_dict") else self._map
+                self._map.to_dict(buffer_manager=buffer_manager)
+                if hasattr(self._map, "to_dict")
+                else self._map
             )
         return data
 
@@ -220,8 +230,8 @@ class MeshStandardMaterial(Material):
         self._metalness = value
         self._notify("metalness", old, value)
 
-    def to_dict(self) -> dict[str, Any]:
-        data = super().to_dict()
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
+        data = super().to_dict(buffer_manager=buffer_manager)
         data.update(
             {
                 "roughness": self._roughness,
@@ -267,8 +277,8 @@ class MeshPhongMaterial(Material):
         self._shininess = value
         self._notify("shininess", old, value)
 
-    def to_dict(self) -> dict[str, Any]:
-        data = super().to_dict()
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
+        data = super().to_dict(buffer_manager=buffer_manager)
         data.update(
             {
                 "shininess": self._shininess,
@@ -291,8 +301,8 @@ class MeshLambertMaterial(Material):
         self._wireframe = wireframe
         self._vertexColors = vertexColors
 
-    def to_dict(self) -> dict[str, Any]:
-        data = super().to_dict()
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
+        data = super().to_dict(buffer_manager=buffer_manager)
         data.update({"wireframe": self._wireframe, "vertexColors": self._vertexColors})
         return data
 
@@ -344,8 +354,8 @@ class PointsMaterial(Material):
         self._vertexColors = value
         self._notify("vertexColors", old, value)
 
-    def to_dict(self) -> dict[str, Any]:
-        data = super().to_dict()
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
+        data = super().to_dict(buffer_manager=buffer_manager)
         data.update(
             {
                 "size": self._size,
@@ -376,8 +386,8 @@ class LineBasicMaterial(Material):
         self._linewidth = value
         self._notify("linewidth", old, value)
 
-    def to_dict(self) -> dict[str, Any]:
-        data = super().to_dict()
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
+        data = super().to_dict(buffer_manager=buffer_manager)
         data.update({"linewidth": self._linewidth, "vertexColors": self._vertexColors})
         return data
 
@@ -392,8 +402,8 @@ class LineDashedMaterial(LineBasicMaterial):
         self._dashSize = dashSize
         self._gapSize = gapSize
 
-    def to_dict(self) -> dict[str, Any]:
-        data = super().to_dict()
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
+        data = super().to_dict(buffer_manager=buffer_manager)
         data.update({"dashSize": self._dashSize, "gapSize": self._gapSize})
         return data
 
@@ -437,7 +447,7 @@ class SpriteMaterial(ThreeJSBase):
         self._opacity = value
         self._notify("opacity", old, value)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
         data = {
             "type": self._type,
             "uuid": self._uuid,
@@ -447,7 +457,9 @@ class SpriteMaterial(ThreeJSBase):
         }
         if self._map:
             data["map"] = (
-                self._map.to_dict() if hasattr(self._map, "to_dict") else self._map
+                self._map.to_dict(buffer_manager=buffer_manager)
+                if hasattr(self._map, "to_dict")
+                else self._map
             )
         return data
 
@@ -543,7 +555,7 @@ class LineMaterial(ThreeJSBase):
         self._vertexColors = value
         self._notify("vertexColors", old, value)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
         data = {
             "type": self._type,
             "uuid": self._uuid,

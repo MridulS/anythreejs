@@ -25,6 +25,7 @@ class PerspectiveCamera(Object3D):
         self._aspect = aspect
         self._near = near
         self._far = far
+        self._lookAt = None
 
     @property
     def fov(self) -> float:
@@ -67,17 +68,33 @@ class PerspectiveCamera(Object3D):
         self._notify("far", old, value)
 
     def lookAt(self, target):
-        """Set the camera to look at a target point."""
+        """Set the camera to look at a target point.
+
+        Args:
+            target: Either a 3-element sequence (x, y, z) or an object with x, y, z attributes
+        """
         # In Three.js this would update the rotation, but for our use case
         # we just store it for serialization
-        if hasattr(target, "__iter__"):
-            self._lookAt = list(target)
-        else:
-            self._lookAt = [target, 0, 0]
-        self._notify("lookAt", None, self._lookAt)
+        old = self._lookAt
 
-    def to_dict(self) -> dict[str, Any]:
-        data = super().to_dict()
+        if hasattr(target, "__iter__"):
+            target_list = list(target)
+            if len(target_list) != 3:
+                raise ValueError(
+                    f"lookAt target must have 3 elements (x, y, z), got {len(target_list)}"
+                )
+            self._lookAt = target_list
+        elif hasattr(target, "x") and hasattr(target, "y") and hasattr(target, "z"):
+            self._lookAt = [target.x, target.y, target.z]
+        else:
+            raise ValueError(
+                "lookAt target must be a 3-element sequence or an object with x, y, z attributes"
+            )
+
+        self._notify("lookAt", old, self._lookAt)
+
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
+        data = super().to_dict(buffer_manager=buffer_manager)
         data.update(
             {
                 "fov": self._fov,
@@ -86,7 +103,7 @@ class PerspectiveCamera(Object3D):
                 "far": self._far,
             }
         )
-        if hasattr(self, "_lookAt"):
+        if self._lookAt is not None:
             data["lookAt"] = self._lookAt
         return data
 
@@ -116,6 +133,7 @@ class OrthographicCamera(Object3D):
         self._near = near
         self._far = far
         self._zoom = zoom
+        self._lookAt = None
 
     @property
     def left(self) -> float:
@@ -158,6 +176,26 @@ class OrthographicCamera(Object3D):
         self._notify("bottom", old, value)
 
     @property
+    def near(self) -> float:
+        return self._near
+
+    @near.setter
+    def near(self, value: float):
+        old = self._near
+        self._near = value
+        self._notify("near", old, value)
+
+    @property
+    def far(self) -> float:
+        return self._far
+
+    @far.setter
+    def far(self, value: float):
+        old = self._far
+        self._far = value
+        self._notify("far", old, value)
+
+    @property
     def zoom(self) -> float:
         return self._zoom
 
@@ -168,15 +206,31 @@ class OrthographicCamera(Object3D):
         self._notify("zoom", old, value)
 
     def lookAt(self, target):
-        """Set the camera to look at a target point."""
-        if hasattr(target, "__iter__"):
-            self._lookAt = list(target)
-        else:
-            self._lookAt = [target, 0, 0]
-        self._notify("lookAt", None, self._lookAt)
+        """Set the camera to look at a target point.
 
-    def to_dict(self) -> dict[str, Any]:
-        data = super().to_dict()
+        Args:
+            target: Either a 3-element sequence (x, y, z) or an object with x, y, z attributes
+        """
+        old = self._lookAt
+
+        if hasattr(target, "__iter__"):
+            target_list = list(target)
+            if len(target_list) != 3:
+                raise ValueError(
+                    f"lookAt target must have 3 elements (x, y, z), got {len(target_list)}"
+                )
+            self._lookAt = target_list
+        elif hasattr(target, "x") and hasattr(target, "y") and hasattr(target, "z"):
+            self._lookAt = [target.x, target.y, target.z]
+        else:
+            raise ValueError(
+                "lookAt target must be a 3-element sequence or an object with x, y, z attributes"
+            )
+
+        self._notify("lookAt", old, self._lookAt)
+
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
+        data = super().to_dict(buffer_manager=buffer_manager)
         data.update(
             {
                 "left": self._left,
@@ -188,6 +242,6 @@ class OrthographicCamera(Object3D):
                 "zoom": self._zoom,
             }
         )
-        if hasattr(self, "_lookAt"):
+        if self._lookAt is not None:
             data["lookAt"] = self._lookAt
         return data

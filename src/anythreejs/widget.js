@@ -11,6 +11,14 @@ import { Line2 } from "https://esm.sh/three@0.182.0/addons/lines/Line2.js";
 import { LineGeometry } from "https://esm.sh/three@0.182.0/addons/lines/LineGeometry.js";
 import { LineMaterial } from "https://esm.sh/three@0.182.0/addons/lines/LineMaterial.js";
 
+// Debug logging flag - set to true to enable debug logs
+const DEBUG = false;
+const debug = (...args) => DEBUG && console.log("[anythreejs]", ...args);
+
+// Performance constants
+const PICKER_THROTTLE_MS = 16; // ~60fps for picker mousemove events
+const HOVER_THROTTLE_MS = 50;  // 50ms throttle for hover detection
+
 /**
  * Map of side strings to Three.js constants
  */
@@ -35,9 +43,28 @@ function parseVertexColors(value) {
 }
 
 /**
+ * Helper to convert dtype string to TypedArray constructor
+ */
+function getTypedArrayConstructor(dtype) {
+  if (!dtype) return Float32Array;
+
+  const dtypeLower = dtype.toLowerCase();
+  if (dtypeLower.includes('float32')) return Float32Array;
+  if (dtypeLower.includes('float64')) return Float64Array;
+  if (dtypeLower.includes('int32')) return Int32Array;
+  if (dtypeLower.includes('uint32')) return Uint32Array;
+  if (dtypeLower.includes('int16')) return Int16Array;
+  if (dtypeLower.includes('uint16')) return Uint16Array;
+  if (dtypeLower.includes('int8')) return Int8Array;
+  if (dtypeLower.includes('uint8')) return Uint8Array;
+
+  return Float32Array;
+}
+
+/**
  * Create a Three.js geometry from serialized data
  */
-function createGeometry(data) {
+function createGeometry(data, buffers = {}) {
   if (!data) return null;
 
   switch (data.type) {
@@ -87,24 +114,78 @@ function createGeometry(data) {
 
       if (data.attributes) {
         for (const [name, attr] of Object.entries(data.attributes)) {
-          let array = attr.array;
-          if (Array.isArray(array)) {
-            array = new Float32Array(array);
+          let array;
+
+          debug(`Processing attribute ${name}:`, attr);
+          debug(`  - Has bufferRef: ${!!attr.bufferRef}`);
+          debug(`  - Has array: ${!!attr.array}`);
+          debug(`  - Buffers available: ${Object.keys(buffers).length}`);
+
+          // Check if using binary buffer transfer
+          if (attr.bufferRef && buffers[attr.bufferRef]) {
+            debug(`  - Using binary buffer: ${attr.bufferRef}`);
+            const buffer = buffers[attr.bufferRef];
+            const TypedArrayConstructor = getTypedArrayConstructor(attr.dtype);
+            array = new TypedArrayConstructor(buffer);
+            debug(`  - Created ${TypedArrayConstructor.name} with length ${array.length}`);
+          } else if (attr.bufferRef && !buffers[attr.bufferRef]) {
+            debug(`  - WARNING: bufferRef ${attr.bufferRef} not found in buffers!`);
+            debug(`  - Available buffers: ${Object.keys(buffers).join(', ')}`);
+            // Try fallback to JSON array if available
+            if (attr.array) {
+              debug(`  - Falling back to JSON array`);
+              array = attr.array;
+              if (Array.isArray(array)) {
+                array = new Float32Array(array);
+              }
+            }
+          } else if (attr.array) {
+            // Using JSON array
+            debug(`  - Using JSON array with length ${attr.array.length}`);
+            array = attr.array;
+            if (Array.isArray(array)) {
+              array = new Float32Array(array);
+            }
           }
-          const itemSize = attr.itemSize || 3;
-          geometry.setAttribute(
-            name,
-            new THREE.BufferAttribute(array, itemSize, attr.normalized)
-          );
+
+          if (array) {
+            const itemSize = attr.itemSize || 3;
+            geometry.setAttribute(
+              name,
+              new THREE.BufferAttribute(array, itemSize, attr.normalized)
+            );
+            debug(`  - setAttribute ${name} successful`);
+          } else {
+            debug(`  - ERROR: No array data available for attribute ${name}`);
+          }
         }
       }
 
       if (data.index) {
-        let indexArray = data.index;
-        if (Array.isArray(indexArray)) {
-          indexArray = new Uint32Array(indexArray);
+        let indexArray;
+
+        // Check if using binary buffer transfer
+        if (data.index.bufferRef && buffers[data.index.bufferRef]) {
+          const buffer = buffers[data.index.bufferRef];
+          const TypedArrayConstructor = getTypedArrayConstructor(data.index.dtype);
+          indexArray = new TypedArrayConstructor(buffer);
+        } else if (data.index.bufferRef && !buffers[data.index.bufferRef]) {
+          debug(`WARNING: index bufferRef ${data.index.bufferRef} not found!`);
+          // Try fallback
+          if (Array.isArray(data.index)) {
+            indexArray = new Uint32Array(data.index);
+          }
+        } else {
+          // Fallback to JSON array
+          indexArray = data.index;
+          if (Array.isArray(indexArray)) {
+            indexArray = new Uint32Array(indexArray);
+          }
         }
-        geometry.setIndex(new THREE.BufferAttribute(indexArray, 1));
+
+        if (indexArray) {
+          geometry.setIndex(new THREE.BufferAttribute(indexArray, 1));
+        }
       }
 
       // Compute normals if not provided
@@ -116,7 +197,7 @@ function createGeometry(data) {
     }
 
     case "EdgesGeometry": {
-      const sourceGeometry = data.geometry ? createGeometry(data.geometry) : null;
+      const sourceGeometry = data.geometry ? createGeometry(data.geometry, buffers) : null;
       if (sourceGeometry) {
         return new THREE.EdgesGeometry(sourceGeometry, data.thresholdAngle ?? 1);
       }
@@ -198,10 +279,10 @@ const FILTER_MAP = {
 /**
  * Create a Three.js texture from serialized data
  */
-function createTexture(data) {
+function createTexture(data, buffers = {}) {
   if (!data) return null;
 
-  console.log("createTexture called with:", data.type, "format:", data.format, "dtype:", data.dtype);
+  debug("createTexture called with:", data.type, "format:", data.format, "dtype:", data.dtype);
 
   switch (data.type) {
     case "DataTexture": {
@@ -209,23 +290,32 @@ function createTexture(data) {
       let format = FORMAT_MAP[data.format] ?? THREE.RGBAFormat;
       const dtype = TYPE_MAP[data.dtype] ?? THREE.UnsignedByteType;
 
-      console.log("DataTexture: format=", format, "dtype=", dtype, "width=", data.width, "height=", data.height, "data length=", data.data?.length);
+      debug("DataTexture: format=", format, "dtype=", dtype, "width=", data.width, "height=", data.height, "data length=", data.data?.length);
 
       // Convert data to appropriate typed array
-      let array = data.data;
+      let array;
       let width = data.width;
       let height = data.height;
 
-      if (Array.isArray(array)) {
-        // Determine array type based on dtype
-        if (dtype === THREE.FloatType) {
-          array = new Float32Array(array);
-        } else if (dtype === THREE.HalfFloatType) {
-          array = new Float32Array(array); // Three.js will convert
-        } else if (dtype === THREE.UnsignedByteType) {
-          array = new Uint8Array(array);
-        } else {
-          array = new Float32Array(array);
+      // Check if using binary buffer transfer
+      if (data.bufferRef && buffers[data.bufferRef]) {
+        const buffer = buffers[data.bufferRef];
+        const TypedArrayConstructor = getTypedArrayConstructor(data.dataType);
+        array = new TypedArrayConstructor(buffer);
+      } else if (data.data) {
+        // Fallback to JSON array
+        array = data.data;
+        if (Array.isArray(array)) {
+          // Determine array type based on dtype
+          if (dtype === THREE.FloatType) {
+            array = new Float32Array(array);
+          } else if (dtype === THREE.HalfFloatType) {
+            array = new Float32Array(array); // Three.js will convert
+          } else if (dtype === THREE.UnsignedByteType) {
+            array = new Uint8Array(array);
+          } else {
+            array = new Float32Array(array);
+          }
         }
       }
 
@@ -235,12 +325,12 @@ function createTexture(data) {
         const channels = format === THREE.RGBAFormat ? 4 : (format === THREE.RGBFormat ? 3 : 1);
         const pixelCount = array.length / channels;
         width = height = Math.sqrt(pixelCount);
-        console.log("DataTexture: inferred dimensions:", width, "x", height);
+        debug("DataTexture: inferred dimensions:", width, "x", height);
       }
 
       // RGBFormat is deprecated in newer Three.js - convert RGB to RGBA
       if (format === THREE.RGBFormat || data.format === "RGBFormat") {
-        console.log("Converting RGB to RGBA format");
+        debug("Converting RGB to RGBA format");
         const channels = 3;
         const pixelCount = array.length / channels;
         const rgbaArray = dtype === THREE.FloatType ? new Float32Array(pixelCount * 4) : new Uint8Array(pixelCount * 4);
@@ -254,7 +344,7 @@ function createTexture(data) {
         format = THREE.RGBAFormat;
       }
 
-      console.log("Creating THREE.DataTexture with array length:", array.length, "width:", width, "height:", height, "format:", format);
+      debug("Creating THREE.DataTexture with array length:", array.length, "width:", width, "height:", height, "format:", format);
 
       const texture = new THREE.DataTexture(array, width, height, format, dtype);
       texture.wrapS = WRAP_MAP[data.wrapS] ?? THREE.ClampToEdgeWrapping;
@@ -262,15 +352,19 @@ function createTexture(data) {
       texture.magFilter = FILTER_MAP[data.magFilter] ?? THREE.LinearFilter;
       texture.minFilter = FILTER_MAP[data.minFilter] ?? THREE.LinearFilter;
 
-      // Set colorspace for proper color rendering
-      texture.colorSpace = THREE.SRGBColorSpace;
+      // Set colorspace - use Linear for float textures, sRGB for byte textures
+      if (dtype === THREE.UnsignedByteType) {
+        texture.colorSpace = THREE.SRGBColorSpace;
+      } else {
+        texture.colorSpace = THREE.LinearSRGBColorSpace;
+      }
 
       texture.needsUpdate = true;
 
       // Don't flip Y - the data comes in correct orientation from numpy
       texture.flipY = false;
 
-      console.log("DataTexture created successfully:", texture);
+      debug("DataTexture created successfully:", texture);
 
       return texture;
     }
@@ -312,7 +406,7 @@ function createTexture(data) {
 /**
  * Create a Three.js material from serialized data
  */
-function createMaterial(data) {
+function createMaterial(data, buffers = {}) {
   if (!data) return new THREE.MeshBasicMaterial();
 
   const side = SIDE_MAP[data.side] || THREE.FrontSide;
@@ -329,7 +423,7 @@ function createMaterial(data) {
 
   switch (data.type) {
     case "MeshBasicMaterial": {
-      console.log("Creating MeshBasicMaterial, has map:", !!data.map);
+      debug("Creating MeshBasicMaterial, has map:", !!data.map);
       const mat = new THREE.MeshBasicMaterial({
         ...baseProps,
         wireframe: data.wireframe ?? false,
@@ -337,12 +431,12 @@ function createMaterial(data) {
       });
       // Handle texture map
       if (data.map) {
-        console.log("MeshBasicMaterial: creating texture from map");
-        const texture = createTexture(data.map);
+        debug("MeshBasicMaterial: creating texture from map");
+        const texture = createTexture(data.map, buffers);
         if (texture) {
           mat.map = texture;
           mat.needsUpdate = true;
-          console.log("MeshBasicMaterial: map texture set successfully");
+          debug("MeshBasicMaterial: map texture set successfully");
         } else {
           console.warn("MeshBasicMaterial: createTexture returned null");
         }
@@ -556,43 +650,43 @@ function applyTransform(obj, data) {
 /**
  * Create a Three.js object from serialized data
  */
-function createObject(data) {
+function createObject(data, buffers = {}) {
   if (!data) return null;
 
   let obj;
 
   switch (data.type) {
     case "Mesh": {
-      const geometry = createGeometry(data.geometry);
-      const material = createMaterial(data.material);
+      const geometry = createGeometry(data.geometry, buffers);
+      const material = createMaterial(data.material, buffers);
       obj = new THREE.Mesh(geometry, material);
       break;
     }
 
     case "Points": {
-      const geometry = createGeometry(data.geometry) || new THREE.BufferGeometry();
-      const material = createMaterial(data.material);
+      const geometry = createGeometry(data.geometry, buffers) || new THREE.BufferGeometry();
+      const material = createMaterial(data.material, buffers);
       obj = new THREE.Points(geometry, material);
       break;
     }
 
     case "Line": {
-      const geometry = createGeometry(data.geometry) || new THREE.BufferGeometry();
-      const material = createMaterial(data.material);
+      const geometry = createGeometry(data.geometry, buffers) || new THREE.BufferGeometry();
+      const material = createMaterial(data.material, buffers);
       obj = new THREE.Line(geometry, material);
       break;
     }
 
     case "LineSegments": {
-      const geometry = createGeometry(data.geometry) || new THREE.BufferGeometry();
-      const material = createMaterial(data.material);
+      const geometry = createGeometry(data.geometry, buffers) || new THREE.BufferGeometry();
+      const material = createMaterial(data.material, buffers);
       obj = new THREE.LineSegments(geometry, material);
       break;
     }
 
     case "Line2": {
-      const geometry = createGeometry(data.geometry) || new LineGeometry();
-      const material = createMaterial(data.material) || new LineMaterial({ color: 0xffffff });
+      const geometry = createGeometry(data.geometry, buffers) || new LineGeometry();
+      const material = createMaterial(data.material, buffers) || new LineMaterial({ color: 0xffffff });
       obj = new Line2(geometry, material);
       obj.computeLineDistances();
       break;
@@ -652,7 +746,7 @@ function createObject(data) {
       obj = new THREE.Group();
       if (data.children) {
         for (const childData of data.children) {
-          const child = createObject(childData);
+          const child = createObject(childData, buffers);
           if (child) {
             obj.add(child);
           }
@@ -691,7 +785,7 @@ function createObject(data) {
   // Process children for non-Group objects too
   if (data.children && data.type !== "Group") {
     for (const childData of data.children) {
-      const child = createObject(childData);
+      const child = createObject(childData, buffers);
       if (child) {
         obj.add(child);
       }
@@ -753,7 +847,7 @@ function createCamera(data, aspect) {
 /**
  * Build scene from serialized data
  */
-function buildScene(sceneData) {
+function buildScene(sceneData, buffers = {}) {
   const scene = new THREE.Scene();
 
   if (sceneData.background) {
@@ -762,7 +856,7 @@ function buildScene(sceneData) {
 
   if (sceneData.children) {
     for (const childData of sceneData.children) {
-      const child = createObject(childData);
+      const child = createObject(childData, buffers);
       if (child) {
         scene.add(child);
       }
@@ -810,6 +904,44 @@ function render({ model, el }) {
   let controls = null;
   let animationId = null;
   let pickers = [];
+  let buffers = {}; // Binary buffers from Python
+
+  /**
+   * Extract binary buffers from widget state
+   * In anywidget, buffers can be accessed through widget_manager
+   */
+  function updateBuffers() {
+    try {
+      // anywidget provides buffers through the widget manager's state
+      if (model.widget_manager && model.widget_manager.get_state) {
+        const state = model.widget_manager.get_state(model);
+        if (state && state.buffers) {
+          buffers = {};
+          for (const [key, value] of Object.entries(state.buffers)) {
+            // Extract the DataView from buffer data
+            if (value && value.data) {
+              buffers[key] = value.data.buffer;
+            } else {
+              buffers[key] = value;
+            }
+          }
+          debug("Updated buffers:", Object.keys(buffers));
+          return;
+        }
+      }
+
+      // Fallback: buffers might be directly in model attributes
+      // This is a simplified approach that may need adjustment
+      debug("No buffers found in widget state");
+      buffers = {};
+    } catch (e) {
+      debug("Error updating buffers:", e);
+      buffers = {};
+    }
+  }
+
+  // Update buffers initially
+  updateBuffers();
 
   // Raycaster for picking
   const raycaster = new THREE.Raycaster();
@@ -848,7 +980,7 @@ function render({ model, el }) {
 
     // Rebuild scene
     if (sceneData && Object.keys(sceneData).length > 0) {
-      scene = buildScene(sceneData);
+      scene = buildScene(sceneData, buffers);
     } else {
       scene = new THREE.Scene();
       scene.background = new THREE.Color("#000000");
@@ -888,7 +1020,7 @@ function render({ model, el }) {
 
     // Build scene
     if (sceneData && Object.keys(sceneData).length > 0) {
-      scene = buildScene(sceneData);
+      scene = buildScene(sceneData, buffers);
     } else {
       scene = new THREE.Scene();
       scene.background = new THREE.Color("#000000");
@@ -930,7 +1062,7 @@ function render({ model, el }) {
             controls.enableRotate = ctrlData.enableRotate ?? false;
           }
 
-          console.log("OrbitControls created: enablePan=", controls.enablePan, "enableZoom=", controls.enableZoom, "enableRotate=", controls.enableRotate, "isOrtho=", camera.isOrthographicCamera);
+          debug("OrbitControls created: enablePan=", controls.enablePan, "enableZoom=", controls.enableZoom, "enableRotate=", controls.enableRotate, "isOrtho=", camera.isOrthographicCamera);
 
           if (ctrlData.target) {
             controls.target.set(...ctrlData.target);
@@ -948,17 +1080,17 @@ function render({ model, el }) {
             controlling: ctrlData.controlling,  // UUID of object to pick against
             all: ctrlData.all ?? false,
           });
-          console.log("Registered picker:", ctrlData.uuid, "event:", ctrlData.event, "controlling:", ctrlData.controlling);
+          debug("Registered picker:", ctrlData.uuid, "event:", ctrlData.event, "controlling:", ctrlData.controlling);
         }
       }
     }
 
     // Debug: log all scene objects with their uuids
-    if (scene) {
-      console.log("Scene objects:");
+    if (scene && DEBUG) {
+      debug("Scene objects:");
       scene.traverse((obj) => {
         if (obj.userData.uuid) {
-          console.log("  -", obj.type, "uuid:", obj.userData.uuid);
+          debug("  -", obj.type, "uuid:", obj.userData.uuid);
         }
       });
     }
@@ -1079,14 +1211,14 @@ function render({ model, el }) {
     }
 
     if (pickableObjects.length === 0) {
-      console.log("Picker raycast: no pickable objects found for controlling:", picker.controlling);
+      debug("Picker raycast: no pickable objects found for controlling:", picker.controlling);
       return { picker_uuid: picker.uuid, point: null };
     }
 
     const intersects = raycaster.intersectObjects(pickableObjects, true);
 
     if (intersects.length > 0) {
-      console.log("Picker raycast hit:", intersects[0].point);
+      debug("Picker raycast hit:", intersects[0].point);
     }
 
     if (intersects.length > 0) {
@@ -1189,7 +1321,7 @@ function render({ model, el }) {
       pickerMoveTimeout = setTimeout(() => {
         pickerMoveTimeout = null;
         handlePickerEvent(event, "mousemove");
-      }, 16); // ~60fps
+      }, PICKER_THROTTLE_MS);
     }
 
     if (!model.get("enable_picking")) return;
@@ -1211,7 +1343,7 @@ function render({ model, el }) {
         model.set("_hover_info", hitInfo || {});
         model.save_changes();
       }
-    }, 50); // 50ms throttle
+    }, HOVER_THROTTLE_MS);
   }
 
   // Initialize
@@ -1228,6 +1360,11 @@ function render({ model, el }) {
   // Watch for model changes
   // Scene updates preserve camera position
   model.on("change:_scene_data", updateScene);
+  // Buffer updates require scene update
+  model.on("change:_buffers_changed", () => {
+    updateBuffers();
+    updateScene(); // Rebuild scene with new buffers
+  });
   // Camera and controls updates require full rebuild
   model.on("change:_camera_data", rebuild);
   model.on("change:_controls_data", rebuild);

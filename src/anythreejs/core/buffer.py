@@ -56,17 +56,34 @@ class BufferAttribute:
     def count(self) -> int:
         return len(self._array) // self._itemSize
 
-    def to_dict(self) -> dict[str, Any]:
-        arr = (
-            self._array.flatten().tolist()
-            if hasattr(self._array, "tolist")
-            else self._array
-        )
-        return {
-            "array": arr,
+    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
+        result = {
             "itemSize": self._itemSize,
             "normalized": self._normalized,
         }
+
+        # Use binary buffer transfer if buffer_manager is available
+        if buffer_manager is not None and hasattr(self._array, "flatten"):
+            # Flatten and ensure contiguous for efficient transfer
+            flat_array = self._array.flatten()
+            if not flat_array.flags.c_contiguous:
+                flat_array = np.ascontiguousarray(flat_array)
+
+            # Register buffer and store reference
+            buffer_id = buffer_manager.register_buffer(flat_array)
+            result["bufferRef"] = buffer_id
+            result["dtype"] = str(flat_array.dtype)
+            result["count"] = len(flat_array)
+        else:
+            # Use JSON serialization
+            arr = (
+                self._array.flatten().tolist()
+                if hasattr(self._array, "tolist")
+                else self._array
+            )
+            result["array"] = arr
+
+        return result
 
 
 class Float32BufferAttribute(BufferAttribute):
