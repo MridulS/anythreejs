@@ -5,7 +5,7 @@ Core Three.js components.
 from .base import ThreeJSBase, Object3D
 from .scene import Scene
 from .camera import PerspectiveCamera, OrthographicCamera
-from .controls import OrbitControls, TrackballControls
+from .controls import OrbitControls, TrackballControls, Picker
 from .geometry import (
     BufferGeometry,
     BoxGeometry,
@@ -60,6 +60,7 @@ __all__ = [
     # Controls
     "OrbitControls",
     "TrackballControls",
+    "Picker",
     # Geometry
     "BufferGeometry",
     "BoxGeometry",

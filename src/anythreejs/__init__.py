@@ -33,6 +33,7 @@ from .core import (
     # Controls
     OrbitControls,
     TrackballControls,
+    Picker,
     # Geometry
     BufferGeometry,
     BoxGeometry,
@@ -102,6 +103,7 @@ __all__ = [
     # Controls
     "OrbitControls",
     "TrackballControls",
+    "Picker",
     # Geometry
     "BufferGeometry",
     "BoxGeometry",
