@@ -891,10 +891,10 @@ function render({ model, el }) {
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
-  // Color space settings for compatibility with old pythreejs
-  // Use LinearSRGBColorSpace to match old pythreejs behavior
-  // where vertex colors were displayed without gamma correction
-  renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+  // Color space settings for proper color rendering
+  // Use SRGBColorSpace for correct gamma correction
+  // This ensures matplotlib colors (which are in sRGB) display correctly
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
 
   container.appendChild(renderer.domElement);
 
