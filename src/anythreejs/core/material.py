@@ -129,10 +129,11 @@ class MeshBasicMaterial(Material):
 
     _type = "MeshBasicMaterial"
 
-    def __init__(self, wireframe: bool = False, vertexColors=False, **kwargs):
+    def __init__(self, wireframe: bool = False, vertexColors=False, map=None, **kwargs):
         super().__init__(**kwargs)
         self._wireframe = wireframe
         self._vertexColors = vertexColors
+        self._map = map
 
     @property
     def wireframe(self) -> bool:
@@ -154,9 +155,23 @@ class MeshBasicMaterial(Material):
         self._vertexColors = value
         self._notify("vertexColors", old, value)
 
+    @property
+    def map(self):
+        return self._map
+
+    @map.setter
+    def map(self, value):
+        old = self._map
+        self._map = value
+        self._notify("map", old, value)
+
     def to_dict(self) -> dict[str, Any]:
         data = super().to_dict()
         data.update({"wireframe": self._wireframe, "vertexColors": self._vertexColors})
+        if self._map is not None:
+            data["map"] = (
+                self._map.to_dict() if hasattr(self._map, "to_dict") else self._map
+            )
         return data
 
 

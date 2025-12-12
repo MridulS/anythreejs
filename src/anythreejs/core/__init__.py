@@ -48,7 +48,7 @@ from .buffer import (
     Uint16BufferAttribute,
     Int32BufferAttribute,
 )
-from .textures import TextTexture
+from .textures import TextTexture, DataTexture
 
 __all__ = [
     # Base
@@ -112,4 +112,5 @@ __all__ = [
     "Int32BufferAttribute",
     # Textures
     "TextTexture",
+    "DataTexture",
 ]

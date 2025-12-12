@@ -76,6 +76,26 @@ class OrbitControls(ThreeJSBase):
         self._notify("enableZoom", old, value)
 
     @property
+    def enableRotate(self) -> bool:
+        return self._enableRotate
+
+    @enableRotate.setter
+    def enableRotate(self, value: bool):
+        old = self._enableRotate
+        self._enableRotate = value
+        self._notify("enableRotate", old, value)
+
+    @property
+    def enablePan(self) -> bool:
+        return self._enablePan
+
+    @enablePan.setter
+    def enablePan(self, value: bool):
+        old = self._enablePan
+        self._enablePan = value
+        self._notify("enablePan", old, value)
+
+    @property
     def autoRotate(self) -> bool:
         return self._autoRotate
 
@@ -258,6 +278,7 @@ class Picker(ThreeJSBase):
     def to_dict(self) -> dict[str, Any]:
         result = {
             "type": self._type,
+            "uuid": self._uuid,
             "event": self._event,
             "all": self._all,
         }

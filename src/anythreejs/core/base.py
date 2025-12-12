@@ -53,6 +53,17 @@ class ThreeJSBase:
             if name in self._observers and handler in self._observers[name]:
                 self._observers[name].remove(handler)
 
+    def unobserve_all(self, names: list[str] | str = None):
+        """Unregister all observers, optionally for specific names only."""
+        if names is None:
+            self._observers.clear()
+        else:
+            if isinstance(names, str):
+                names = [names]
+            for name in names:
+                if name in self._observers:
+                    self._observers[name].clear()
+
     @contextmanager
     def hold_trait_notifications(self):
         """Context manager to hold notifications until exit, then batch them."""
