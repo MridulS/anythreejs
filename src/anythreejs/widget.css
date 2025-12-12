@@ -1,0 +1,11 @@
+/* anythreejs renderer styles */
+
+.anythreejs-container {
+  position: relative;
+  overflow: hidden;
+}
+
+.anythreejs-container canvas {
+  display: block;
+}
+

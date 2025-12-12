@@ -1,0 +1,41 @@
+[project]
+name = "anythreejs"
+version = "0.0.1"
+description = "Anywidget wrapper for three.js"
+readme = "README.md"
+authors = [
+    { name = "Mridul Seth", email = "mail@mriduls.com" }
+]
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = [
+    "anywidget>=0.9.21",
+    "numpy>=2",
+    "traitlets>=5.14.3",
+]
+keywords = ["jupyter", "widgets", "threejs", "3d", "visualization", "anywidget"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: Jupyter",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: BSD License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+[project.urls]
+Homepage = "https://github.com/MridulS/anythreejs"
+Repository = "https://github.com/MridulS/anythreejs"
+
+[build-system]
+requires = ["uv_build>=0.9.17,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "jupyterlab>=4.5.0",
+    "prek>=0.2.21",
+    "ruff>=0.14.9",
+]
