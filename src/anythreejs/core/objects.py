@@ -198,3 +198,53 @@ class Sprite(Object3D):
         if self._material:
             data["material"] = self._material.to_dict()
         return data
+
+
+class Line2(Object3D):
+    """Fat line with configurable width using LineGeometry and LineMaterial."""
+
+    _type = "Line2"
+
+    def __init__(self, geometry=None, material=None, **kwargs):
+        super().__init__(**kwargs)
+        self._geometry = geometry
+        self._material = material
+
+    @property
+    def geometry(self):
+        return self._geometry
+
+    @geometry.setter
+    def geometry(self, value):
+        old = self._geometry
+        self._geometry = value
+        if value and self._parent_renderer:
+            value._set_renderer(self._parent_renderer)
+        self._notify("geometry", old, value)
+
+    @property
+    def material(self):
+        return self._material
+
+    @material.setter
+    def material(self, value):
+        old = self._material
+        self._material = value
+        if value and self._parent_renderer:
+            value._set_renderer(self._parent_renderer)
+        self._notify("material", old, value)
+
+    def _set_renderer(self, renderer):
+        super()._set_renderer(renderer)
+        if self._geometry:
+            self._geometry._set_renderer(renderer)
+        if self._material:
+            self._material._set_renderer(renderer)
+
+    def to_dict(self) -> dict[str, Any]:
+        data = super().to_dict()
+        if self._geometry:
+            data["geometry"] = self._geometry.to_dict()
+        if self._material:
+            data["material"] = self._material.to_dict()
+        return data

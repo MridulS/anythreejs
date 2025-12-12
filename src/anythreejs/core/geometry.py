@@ -315,3 +315,55 @@ class EdgesGeometry(ThreeJSBase):
         if self._geometry:
             data["geometry"] = self._geometry.to_dict()
         return data
+
+
+class LineGeometry(ThreeJSBase):
+    """Geometry for fat lines (Line2) with positions and optional colors."""
+
+    _type = "LineGeometry"
+
+    def __init__(self, positions=None, colors=None, **kwargs):
+        super().__init__()
+        self._positions = positions
+        self._colors = colors
+
+    @property
+    def positions(self):
+        return self._positions
+
+    @positions.setter
+    def positions(self, value):
+        old = self._positions
+        self._positions = value
+        self._notify("positions", old, value)
+
+    @property
+    def colors(self):
+        return self._colors
+
+    @colors.setter
+    def colors(self, value):
+        old = self._colors
+        self._colors = value
+        self._notify("colors", old, value)
+
+    def to_dict(self) -> dict[str, Any]:
+        data = {
+            "type": self._type,
+            "uuid": self._uuid,
+        }
+        if self._positions is not None:
+            pos = self._positions
+            if hasattr(pos, "tolist"):
+                pos = pos.tolist()
+            elif hasattr(pos, "flatten"):
+                pos = pos.flatten().tolist()
+            data["positions"] = pos
+        if self._colors is not None:
+            col = self._colors
+            if hasattr(col, "tolist"):
+                col = col.tolist()
+            elif hasattr(col, "flatten"):
+                col = col.flatten().tolist()
+            data["colors"] = col
+        return data

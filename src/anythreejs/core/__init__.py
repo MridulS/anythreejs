@@ -18,6 +18,7 @@ from .geometry import (
     CylinderBufferGeometry,
     TorusGeometry,
     EdgesGeometry,
+    LineGeometry,
 )
 from .material import (
     Material,
@@ -29,8 +30,9 @@ from .material import (
     LineBasicMaterial,
     LineDashedMaterial,
     SpriteMaterial,
+    LineMaterial,
 )
-from .objects import Mesh, Points, Line, LineSegments, Group, Sprite
+from .objects import Mesh, Points, Line, LineSegments, Group, Sprite, Line2
 from .lights import (
     AmbientLight,
     DirectionalLight,
@@ -73,6 +75,7 @@ __all__ = [
     "CylinderBufferGeometry",
     "TorusGeometry",
     "EdgesGeometry",
+    "LineGeometry",
     # Material
     "Material",
     "MeshBasicMaterial",
@@ -83,6 +86,7 @@ __all__ = [
     "LineBasicMaterial",
     "LineDashedMaterial",
     "SpriteMaterial",
+    "LineMaterial",
     # Objects
     "Mesh",
     "Points",
@@ -90,6 +94,7 @@ __all__ = [
     "LineSegments",
     "Group",
     "Sprite",
+    "Line2",
     # Lights
     "AmbientLight",
     "DirectionalLight",

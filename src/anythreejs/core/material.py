@@ -435,3 +435,113 @@ class SpriteMaterial(ThreeJSBase):
                 self._map.to_dict() if hasattr(self._map, "to_dict") else self._map
             )
         return data
+
+
+class LineMaterial(ThreeJSBase):
+    """Material for fat lines (Line2) with configurable line width."""
+
+    _type = "LineMaterial"
+
+    def __init__(
+        self,
+        color: str = "#ffffff",
+        linewidth: float = 1.0,
+        opacity: float = 1.0,
+        transparent: bool = False,
+        dashed: bool = False,
+        dashScale: float = 1.0,
+        dashSize: float = 1.0,
+        gapSize: float = 1.0,
+        vertexColors: bool = False,
+        resolution: tuple = None,
+        **kwargs,
+    ):
+        super().__init__()
+        self._color = color
+        self._linewidth = linewidth
+        self._opacity = opacity
+        self._transparent = transparent
+        self._dashed = dashed
+        self._dashScale = dashScale
+        self._dashSize = dashSize
+        self._gapSize = gapSize
+        self._vertexColors = vertexColors
+        self._resolution = resolution
+
+    @property
+    def color(self) -> str:
+        return self._color
+
+    @color.setter
+    def color(self, value: str):
+        old = self._color
+        self._color = value
+        self._notify("color", old, value)
+
+    @property
+    def linewidth(self) -> float:
+        return self._linewidth
+
+    @linewidth.setter
+    def linewidth(self, value: float):
+        old = self._linewidth
+        self._linewidth = value
+        self._notify("linewidth", old, value)
+
+    @property
+    def opacity(self) -> float:
+        return self._opacity
+
+    @opacity.setter
+    def opacity(self, value: float):
+        old = self._opacity
+        self._opacity = value
+        self._notify("opacity", old, value)
+
+    @property
+    def transparent(self) -> bool:
+        return self._transparent
+
+    @transparent.setter
+    def transparent(self, value: bool):
+        old = self._transparent
+        self._transparent = value
+        self._notify("transparent", old, value)
+
+    @property
+    def dashed(self) -> bool:
+        return self._dashed
+
+    @dashed.setter
+    def dashed(self, value: bool):
+        old = self._dashed
+        self._dashed = value
+        self._notify("dashed", old, value)
+
+    @property
+    def vertexColors(self) -> bool:
+        return self._vertexColors
+
+    @vertexColors.setter
+    def vertexColors(self, value: bool):
+        old = self._vertexColors
+        self._vertexColors = value
+        self._notify("vertexColors", old, value)
+
+    def to_dict(self) -> dict[str, Any]:
+        data = {
+            "type": self._type,
+            "uuid": self._uuid,
+            "color": self._color,
+            "linewidth": self._linewidth,
+            "opacity": self._opacity,
+            "transparent": self._transparent,
+            "dashed": self._dashed,
+            "dashScale": self._dashScale,
+            "dashSize": self._dashSize,
+            "gapSize": self._gapSize,
+            "vertexColors": self._vertexColors,
+        }
+        if self._resolution is not None:
+            data["resolution"] = list(self._resolution)
+        return data

@@ -7,6 +7,7 @@ All Three.js objects inherit from these base classes which provide:
 - UUID for object identification
 """
 
+from contextlib import contextmanager
 from typing import Any, Callable, Optional
 import uuid
 
@@ -24,6 +25,8 @@ class ThreeJSBase:
         self._uuid = str(uuid.uuid4())
         self._observers: dict[str, list[Callable]] = {}
         self._parent_renderer: Optional[Any] = None
+        self._hold_notifications = False
+        self._pending_notifications: list[tuple[str, Any, Any]] = []
 
     @property
     def uuid(self) -> str:
@@ -50,8 +53,33 @@ class ThreeJSBase:
             if name in self._observers and handler in self._observers[name]:
                 self._observers[name].remove(handler)
 
+    @contextmanager
+    def hold_trait_notifications(self):
+        """Context manager to hold notifications until exit, then batch them."""
+        self._hold_notifications = True
+        self._pending_notifications = []
+        try:
+            yield
+        finally:
+            self._hold_notifications = False
+            # Send a single render request after all changes
+            if self._pending_notifications and self._parent_renderer is not None:
+                self._parent_renderer._request_render()
+            # Notify observers of all pending changes
+            for name, old, new in self._pending_notifications:
+                change = {"name": name, "old": old, "new": new, "owner": self}
+                for handler in self._observers.get(name, []):
+                    handler(change)
+                for handler in self._observers.get("_all", []):
+                    handler(change)
+            self._pending_notifications = []
+
     def _notify(self, name: str, old: Any, new: Any):
         """Notify observers of a property change."""
+        if self._hold_notifications:
+            self._pending_notifications.append((name, old, new))
+            return
+
         change = {"name": name, "old": old, "new": new, "owner": self}
 
         for handler in self._observers.get(name, []):
