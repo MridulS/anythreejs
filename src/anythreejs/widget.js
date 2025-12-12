@@ -7,6 +7,9 @@
 import * as THREE from "https://esm.sh/three@0.182.0";
 import { OrbitControls } from "https://esm.sh/three@0.182.0/addons/controls/OrbitControls.js";
 import { TrackballControls } from "https://esm.sh/three@0.182.0/addons/controls/TrackballControls.js";
+import { Line2 } from "https://esm.sh/three@0.182.0/addons/lines/Line2.js";
+import { LineGeometry } from "https://esm.sh/three@0.182.0/addons/lines/LineGeometry.js";
+import { LineMaterial } from "https://esm.sh/three@0.182.0/addons/lines/LineMaterial.js";
 
 /**
  * Map of side strings to Three.js constants
@@ -120,9 +123,189 @@ function createGeometry(data) {
       return new THREE.BufferGeometry();
     }
 
+    case "LineGeometry": {
+      const geometry = new LineGeometry();
+      if (data.positions) {
+        // Flatten if needed (could be array of [x,y,z] or flat array)
+        let positions = data.positions;
+        if (Array.isArray(positions[0])) {
+          positions = positions.flat();
+        }
+        geometry.setPositions(positions);
+      }
+      if (data.colors) {
+        let colors = data.colors;
+        if (Array.isArray(colors[0])) {
+          colors = colors.flat();
+        }
+        geometry.setColors(colors);
+      }
+      return geometry;
+    }
+
     default:
       console.warn(`Unknown geometry type: ${data.type}`);
       return new THREE.BoxGeometry(1, 1, 1);
+  }
+}
+
+/**
+ * Map of format strings to Three.js constants
+ */
+const FORMAT_MAP = {
+  "RGBFormat": THREE.RGBFormat,
+  "RGBAFormat": THREE.RGBAFormat,
+  "RedFormat": THREE.RedFormat,
+  "RGFormat": THREE.RGFormat,
+  "AlphaFormat": THREE.AlphaFormat,
+};
+
+/**
+ * Map of type strings to Three.js constants
+ */
+const TYPE_MAP = {
+  "UnsignedByteType": THREE.UnsignedByteType,
+  "ByteType": THREE.ByteType,
+  "ShortType": THREE.ShortType,
+  "UnsignedShortType": THREE.UnsignedShortType,
+  "IntType": THREE.IntType,
+  "UnsignedIntType": THREE.UnsignedIntType,
+  "FloatType": THREE.FloatType,
+  "HalfFloatType": THREE.HalfFloatType,
+};
+
+/**
+ * Map of wrapping strings to Three.js constants
+ */
+const WRAP_MAP = {
+  "ClampToEdgeWrapping": THREE.ClampToEdgeWrapping,
+  "RepeatWrapping": THREE.RepeatWrapping,
+  "MirroredRepeatWrapping": THREE.MirroredRepeatWrapping,
+};
+
+/**
+ * Map of filter strings to Three.js constants
+ */
+const FILTER_MAP = {
+  "NearestFilter": THREE.NearestFilter,
+  "LinearFilter": THREE.LinearFilter,
+  "NearestMipmapNearestFilter": THREE.NearestMipmapNearestFilter,
+  "NearestMipmapLinearFilter": THREE.NearestMipmapLinearFilter,
+  "LinearMipmapNearestFilter": THREE.LinearMipmapNearestFilter,
+  "LinearMipmapLinearFilter": THREE.LinearMipmapLinearFilter,
+};
+
+/**
+ * Create a Three.js texture from serialized data
+ */
+function createTexture(data) {
+  if (!data) return null;
+
+  console.log("createTexture called with:", data.type, "format:", data.format, "dtype:", data.dtype);
+
+  switch (data.type) {
+    case "DataTexture": {
+      // Get format and type
+      let format = FORMAT_MAP[data.format] ?? THREE.RGBAFormat;
+      const dtype = TYPE_MAP[data.dtype] ?? THREE.UnsignedByteType;
+
+      console.log("DataTexture: format=", format, "dtype=", dtype, "width=", data.width, "height=", data.height, "data length=", data.data?.length);
+
+      // Convert data to appropriate typed array
+      let array = data.data;
+      let width = data.width;
+      let height = data.height;
+
+      if (Array.isArray(array)) {
+        // Determine array type based on dtype
+        if (dtype === THREE.FloatType) {
+          array = new Float32Array(array);
+        } else if (dtype === THREE.HalfFloatType) {
+          array = new Float32Array(array); // Three.js will convert
+        } else if (dtype === THREE.UnsignedByteType) {
+          array = new Uint8Array(array);
+        } else {
+          array = new Float32Array(array);
+        }
+      }
+
+      // Infer dimensions if not provided
+      if (!width || !height) {
+        // Assume square texture if dimensions not provided
+        const channels = format === THREE.RGBAFormat ? 4 : (format === THREE.RGBFormat ? 3 : 1);
+        const pixelCount = array.length / channels;
+        width = height = Math.sqrt(pixelCount);
+        console.log("DataTexture: inferred dimensions:", width, "x", height);
+      }
+
+      // RGBFormat is deprecated in newer Three.js - convert RGB to RGBA
+      if (format === THREE.RGBFormat || data.format === "RGBFormat") {
+        console.log("Converting RGB to RGBA format");
+        const channels = 3;
+        const pixelCount = array.length / channels;
+        const rgbaArray = dtype === THREE.FloatType ? new Float32Array(pixelCount * 4) : new Uint8Array(pixelCount * 4);
+        for (let i = 0; i < pixelCount; i++) {
+          rgbaArray[i * 4 + 0] = array[i * 3 + 0]; // R
+          rgbaArray[i * 4 + 1] = array[i * 3 + 1]; // G
+          rgbaArray[i * 4 + 2] = array[i * 3 + 2]; // B
+          rgbaArray[i * 4 + 3] = dtype === THREE.FloatType ? 1.0 : 255; // A
+        }
+        array = rgbaArray;
+        format = THREE.RGBAFormat;
+      }
+
+      console.log("Creating THREE.DataTexture with array length:", array.length, "width:", width, "height:", height, "format:", format);
+
+      const texture = new THREE.DataTexture(array, width, height, format, dtype);
+      texture.wrapS = WRAP_MAP[data.wrapS] ?? THREE.ClampToEdgeWrapping;
+      texture.wrapT = WRAP_MAP[data.wrapT] ?? THREE.ClampToEdgeWrapping;
+      texture.magFilter = FILTER_MAP[data.magFilter] ?? THREE.LinearFilter;
+      texture.minFilter = FILTER_MAP[data.minFilter] ?? THREE.LinearFilter;
+
+      // Set colorspace for proper color rendering
+      texture.colorSpace = THREE.SRGBColorSpace;
+
+      texture.needsUpdate = true;
+
+      // Don't flip Y - the data comes in correct orientation from numpy
+      texture.flipY = false;
+
+      console.log("DataTexture created successfully:", texture);
+
+      return texture;
+    }
+
+    case "TextTexture": {
+      // Create canvas-based text texture
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      const text = data.string || "";
+      const fontSize = data.size || 100;
+      const fontFace = data.fontFace || 'Arial';
+
+      ctx.font = `${fontSize}px ${fontFace}`;
+      const metrics = ctx.measureText(text);
+
+      const width = metrics.width || fontSize;
+      const height = fontSize * 1.2;
+
+      canvas.width = width;
+      canvas.height = height;
+
+      ctx.font = `${fontSize}px ${fontFace}`;
+      ctx.fillStyle = data.color || 'black';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, width / 2, height / 2);
+
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.needsUpdate = true;
+      return texture;
+    }
+
+    default:
+      console.warn(`Unknown texture type: ${data.type}`);
+      return null;
   }
 }
 
@@ -145,12 +328,27 @@ function createMaterial(data) {
   };
 
   switch (data.type) {
-    case "MeshBasicMaterial":
-      return new THREE.MeshBasicMaterial({
+    case "MeshBasicMaterial": {
+      console.log("Creating MeshBasicMaterial, has map:", !!data.map);
+      const mat = new THREE.MeshBasicMaterial({
         ...baseProps,
         wireframe: data.wireframe ?? false,
         vertexColors: parseVertexColors(data.vertexColors),
       });
+      // Handle texture map
+      if (data.map) {
+        console.log("MeshBasicMaterial: creating texture from map");
+        const texture = createTexture(data.map);
+        if (texture) {
+          mat.map = texture;
+          mat.needsUpdate = true;
+          console.log("MeshBasicMaterial: map texture set successfully");
+        } else {
+          console.warn("MeshBasicMaterial: createTexture returned null");
+        }
+      }
+      return mat;
+    }
 
     case "MeshStandardMaterial":
       return new THREE.MeshStandardMaterial({
@@ -212,6 +410,23 @@ function createMaterial(data) {
         opacity: data.opacity ?? 1,
         transparent: data.transparent ?? false,
       });
+
+    case "LineMaterial": {
+      const mat = new LineMaterial({
+        color: new THREE.Color(data.color || "#ffffff").getHex(),
+        linewidth: data.linewidth ?? 1,
+        vertexColors: parseVertexColors(data.vertexColors),
+        opacity: data.opacity ?? 1,
+        transparent: data.transparent ?? false,
+        dashed: data.dashed ?? false,
+        dashScale: data.dashScale ?? 1,
+        dashSize: data.dashSize ?? 1,
+        gapSize: data.gapSize ?? 1,
+      });
+      // LineMaterial needs resolution to be set
+      mat.resolution.set(window.innerWidth, window.innerHeight);
+      return mat;
+    }
 
     default:
       console.warn(`Unknown material type: ${data.type}`);
@@ -375,6 +590,14 @@ function createObject(data) {
       break;
     }
 
+    case "Line2": {
+      const geometry = createGeometry(data.geometry) || new LineGeometry();
+      const material = createMaterial(data.material) || new LineMaterial({ color: 0xffffff });
+      obj = new Line2(geometry, material);
+      obj.computeLineDistances();
+      break;
+    }
+
     case "Sprite": {
       let material;
       if (data.material) {
@@ -499,13 +722,12 @@ function createCamera(data, aspect) {
       break;
 
     case "OrthographicCamera": {
-      const halfWidth = ((data.right ?? 1) - (data.left ?? -1)) / 2;
-      const halfHeight = ((data.top ?? 1) - (data.bottom ?? -1)) / 2;
+      // Use the exact values provided from Python
       camera = new THREE.OrthographicCamera(
-        -halfWidth * aspect,
-        halfWidth * aspect,
-        halfHeight,
-        -halfHeight,
+        data.left ?? -1,
+        data.right ?? 1,
+        data.top ?? 1,
+        data.bottom ?? -1,
         data.near ?? 0.1,
         data.far ?? 2000
       );
@@ -587,10 +809,23 @@ function render({ model, el }) {
   let camera = null;
   let controls = null;
   let animationId = null;
+  let pickers = [];
 
   // Raycaster for picking
   const raycaster = new THREE.Raycaster();
   const mouse = new THREE.Vector2();
+
+  /**
+   * Update resolution for all LineMaterial instances in the scene
+   */
+  function updateLineMaterialResolutions() {
+    if (!scene) return;
+    scene.traverse((obj) => {
+      if (obj.material && obj.material.isLineMaterial) {
+        obj.material.resolution.set(width, height);
+      }
+    });
+  }
 
   /**
    * Update only the scene, preserving camera position and controls
@@ -636,6 +871,9 @@ function render({ model, el }) {
     if (controls && savedControlsTarget) {
       controls.target.copy(savedControlsTarget);
     }
+
+    // Update LineMaterial resolutions
+    updateLineMaterialResolutions();
   }
 
   /**
@@ -668,29 +906,65 @@ function render({ model, el }) {
       controls = null;
     }
 
+    // Store pickers for event handling
+    pickers = [];
+
     if (controlsData && controlsData.length > 0) {
-      const ctrlData = controlsData[0]; // Use first control
+      for (const ctrlData of controlsData) {
+        if (ctrlData.type === "OrbitControls") {
+          controls = new OrbitControls(camera, renderer.domElement);
+          controls.enableDamping = ctrlData.enableDamping ?? true;
+          controls.dampingFactor = ctrlData.dampingFactor ?? 0.05;
+          controls.enableZoom = ctrlData.enableZoom ?? true;
+          controls.enableRotate = ctrlData.enableRotate ?? true;
+          controls.enablePan = ctrlData.enablePan ?? true;
+          controls.autoRotate = ctrlData.autoRotate ?? false;
+          controls.autoRotateSpeed = ctrlData.autoRotateSpeed ?? 2.0;
 
-      if (ctrlData.type === "OrbitControls") {
-        controls = new OrbitControls(camera, renderer.domElement);
-        controls.enableDamping = ctrlData.enableDamping ?? true;
-        controls.dampingFactor = ctrlData.dampingFactor ?? 0.05;
-        controls.enableZoom = ctrlData.enableZoom ?? true;
-        controls.enableRotate = ctrlData.enableRotate ?? true;
-        controls.enablePan = ctrlData.enablePan ?? true;
-        controls.autoRotate = ctrlData.autoRotate ?? false;
-        controls.autoRotateSpeed = ctrlData.autoRotateSpeed ?? 2.0;
+          // Enable screen space panning (important for 2D orthographic views)
+          controls.screenSpacePanning = ctrlData.screenSpacePanning ?? true;
 
-        if (ctrlData.target) {
-          controls.target.set(...ctrlData.target);
-        }
-      } else if (ctrlData.type === "TrackballControls") {
-        controls = new TrackballControls(camera, renderer.domElement);
-        if (ctrlData.target) {
-          controls.target.set(...ctrlData.target);
+          // Default mouse buttons: LEFT=rotate, MIDDLE=dolly, RIGHT=pan
+          // For orthographic 2D, disable rotation by default but keep pan on right-click
+          if (camera.isOrthographicCamera) {
+            controls.enableRotate = ctrlData.enableRotate ?? false;
+          }
+
+          console.log("OrbitControls created: enablePan=", controls.enablePan, "enableZoom=", controls.enableZoom, "enableRotate=", controls.enableRotate, "isOrtho=", camera.isOrthographicCamera);
+
+          if (ctrlData.target) {
+            controls.target.set(...ctrlData.target);
+          }
+        } else if (ctrlData.type === "TrackballControls") {
+          controls = new TrackballControls(camera, renderer.domElement);
+          if (ctrlData.target) {
+            controls.target.set(...ctrlData.target);
+          }
+        } else if (ctrlData.type === "Picker") {
+          // Store picker configuration for event handling
+          pickers.push({
+            uuid: ctrlData.uuid,
+            event: ctrlData.event || "click",
+            controlling: ctrlData.controlling,  // UUID of object to pick against
+            all: ctrlData.all ?? false,
+          });
+          console.log("Registered picker:", ctrlData.uuid, "event:", ctrlData.event, "controlling:", ctrlData.controlling);
         }
       }
     }
+
+    // Debug: log all scene objects with their uuids
+    if (scene) {
+      console.log("Scene objects:");
+      scene.traverse((obj) => {
+        if (obj.userData.uuid) {
+          console.log("  -", obj.type, "uuid:", obj.userData.uuid);
+        }
+      });
+    }
+
+    // Update LineMaterial resolutions after rebuild
+    updateLineMaterialResolutions();
   }
 
   /**
@@ -721,14 +995,14 @@ function render({ model, el }) {
       if (camera.isPerspectiveCamera) {
         camera.aspect = width / height;
         camera.updateProjectionMatrix();
-      } else if (camera.isOrthographicCamera) {
-        const aspect = width / height;
-        const frustumHeight = camera.top - camera.bottom;
-        camera.left = (-frustumHeight * aspect) / 2;
-        camera.right = (frustumHeight * aspect) / 2;
-        camera.updateProjectionMatrix();
       }
+      // Note: OrthographicCamera bounds are managed by the Python side
+      // (e.g., matplotgl sets left/right/top/bottom directly)
+      // so we don't auto-adjust them on resize
     }
+
+    // Update LineMaterial resolutions
+    updateLineMaterialResolutions();
   }
 
   /**
@@ -776,9 +1050,93 @@ function render({ model, el }) {
   }
 
   /**
+   * Perform raycasting for a specific picker (against its controlling object)
+   */
+  function performPickerRaycast(event, picker) {
+    if (!scene || !camera) return null;
+
+    getMousePosition(event);
+    raycaster.setFromCamera(mouse, camera);
+
+    // Find objects to pick against
+    let pickableObjects = [];
+
+    if (picker.controlling) {
+      // Pick against specific object(s)
+      scene.traverse((obj) => {
+        const objUuid = obj.userData.uuid || obj.uuid;
+        if (objUuid === picker.controlling) {
+          pickableObjects.push(obj);
+        }
+      });
+    } else {
+      // Pick against all meshes
+      scene.traverse((obj) => {
+        if (obj.isMesh || obj.isPoints || obj.isLine || obj.isLineSegments || obj.isSprite) {
+          pickableObjects.push(obj);
+        }
+      });
+    }
+
+    if (pickableObjects.length === 0) {
+      console.log("Picker raycast: no pickable objects found for controlling:", picker.controlling);
+      return { picker_uuid: picker.uuid, point: null };
+    }
+
+    const intersects = raycaster.intersectObjects(pickableObjects, true);
+
+    if (intersects.length > 0) {
+      console.log("Picker raycast hit:", intersects[0].point);
+    }
+
+    if (intersects.length > 0) {
+      const hit = intersects[0];
+      return {
+        picker_uuid: picker.uuid,
+        point: hit.point ? [hit.point.x, hit.point.y, hit.point.z] : null,
+        distance: hit.distance,
+        faceIndex: hit.faceIndex ?? null,
+        object_uuid: hit.object.userData.uuid || hit.object.uuid,
+        modifiers: getModifiers(event),
+      };
+    }
+    return { picker_uuid: picker.uuid, point: null };
+  }
+
+  /**
+   * Get keyboard modifiers from event
+   */
+  function getModifiers(event) {
+    const mods = [];
+    if (event.shiftKey) mods.push("shift");
+    if (event.ctrlKey) mods.push("ctrl");
+    if (event.altKey) mods.push("alt");
+    if (event.metaKey) mods.push("meta");
+    return mods;
+  }
+
+  /**
+   * Handle picker events for a specific event type
+   */
+  function handlePickerEvent(event, eventType) {
+    for (const picker of pickers) {
+      if (picker.event === eventType) {
+        const result = performPickerRaycast(event, picker);
+        if (result) {
+          model.set("_picker_event", result);
+          model.save_changes();
+        }
+      }
+    }
+  }
+
+  /**
    * Handle click events
    */
   function onClick(event) {
+    // Handle pickers
+    handlePickerEvent(event, "click");
+
     if (!model.get("enable_picking")) return;
 
     const hitInfo = performRaycast(event);
@@ -792,6 +1150,9 @@ function render({ model, el }) {
    * Handle double-click events
    */
   function onDblClick(event) {
+    // Handle pickers
+    handlePickerEvent(event, "dblclick");
+
     if (!model.get("enable_picking")) return;
 
     const hitInfo = performRaycast(event);
@@ -804,10 +1165,33 @@ function render({ model, el }) {
   }
 
   /**
+   * Handle mousedown events
+   */
+  function onMouseDown(event) {
+    handlePickerEvent(event, "mousedown");
+  }
+
+  /**
+   * Handle mouseup events
+   */
+  function onMouseUp(event) {
+    handlePickerEvent(event, "mouseup");
+  }
+
+  /**
    * Handle hover/mousemove events (throttled)
    */
   let hoverTimeout = null;
+  let pickerMoveTimeout = null;
   function onMouseMove(event) {
+    // Handle mousemove pickers (throttled separately)
+    if (!pickerMoveTimeout) {
+      pickerMoveTimeout = setTimeout(() => {
+        pickerMoveTimeout = null;
+        handlePickerEvent(event, "mousemove");
+      }, 16); // ~60fps
+    }
+
     if (!model.get("enable_picking")) return;
 
     // Throttle hover events
@@ -837,6 +1221,8 @@ function render({ model, el }) {
   // Add event listeners for picking
   renderer.domElement.addEventListener("click", onClick);
   renderer.domElement.addEventListener("dblclick", onDblClick);
+  renderer.domElement.addEventListener("mousedown", onMouseDown);
+  renderer.domElement.addEventListener("mouseup", onMouseUp);
   renderer.domElement.addEventListener("mousemove", onMouseMove);
 
   // Watch for model changes
@@ -856,8 +1242,13 @@ function render({ model, el }) {
     if (hoverTimeout) {
       clearTimeout(hoverTimeout);
     }
+    if (pickerMoveTimeout) {
+      clearTimeout(pickerMoveTimeout);
+    }
     renderer.domElement.removeEventListener("click", onClick);
     renderer.domElement.removeEventListener("dblclick", onDblClick);
+    renderer.domElement.removeEventListener("mousedown", onMouseDown);
+    renderer.domElement.removeEventListener("mouseup", onMouseUp);
     renderer.domElement.removeEventListener("mousemove", onMouseMove);
     if (controls) {
       controls.dispose();

@@ -83,6 +83,7 @@ from .core import (
     Int32BufferAttribute,
     # Textures
     TextTexture,
+    DataTexture,
 )
 
 # Convenience alias for pythreejs-style imports: `import anythreejs as p3`
@@ -156,6 +157,7 @@ __all__ = [
     "Int32BufferAttribute",
     # Textures
     "TextTexture",
+    "DataTexture",
     # Convenience alias
     "p3",
 ]

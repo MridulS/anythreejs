@@ -49,6 +49,9 @@ class Renderer(anywidget.AnyWidget):
     _click_info = traitlets.Dict({}).tag(sync=True)
     _hover_info = traitlets.Dict({}).tag(sync=True)
 
+    # Picker events - synced from JavaScript
+    _picker_event = traitlets.Dict({}).tag(sync=True)
+
     # Enable/disable picking
     enable_picking = traitlets.Bool(True).tag(sync=True)
 
@@ -94,6 +97,38 @@ class Renderer(anywidget.AnyWidget):
         for ctrl in self._controls:
             ctrl._set_renderer(self)
         self._update_controls_data()
+
+        # Observe picker events from JavaScript
+        self.observe(self._on_picker_event, names=["_picker_event"])
+
+    def _on_picker_event(self, change):
+        """Handle picker events from JavaScript."""
+        event_data = change.get("new", {})
+        if not event_data:
+            return
+
+        picker_uuid = event_data.get("picker_uuid")
+        if not picker_uuid:
+            return
+
+        # Find the picker with matching UUID
+        for ctrl in self._controls:
+            if (
+                hasattr(ctrl, "_type")
+                and ctrl._type == "Picker"
+                and ctrl.uuid == picker_uuid
+            ):
+                # Update picker properties
+                if "point" in event_data:
+                    point = event_data["point"]
+                    ctrl.point = tuple(point) if point else None
+                if "distance" in event_data:
+                    ctrl._distance = event_data["distance"]
+                if "faceIndex" in event_data:
+                    ctrl._faceIndex = event_data["faceIndex"]
+                if "modifiers" in event_data:
+                    ctrl._modifiers = event_data.get("modifiers", [])
+                break
 
     @property
     def scene(self) -> Optional[Scene]:
