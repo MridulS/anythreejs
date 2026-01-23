@@ -20,6 +20,52 @@ const PICKER_THROTTLE_MS = 16; // ~60fps for picker mousemove events
 const HOVER_THROTTLE_MS = 50;  // 50ms throttle for hover detection
 
 /**
+ * Global store for shared Three.js objects across multiple views of the same widget.
+ * This is the key to pythreejs-like behavior - all views share the SAME Three.js
+ * scene, camera, and controls objects, so moving the camera in one view instantly
+ * moves it in all other views.
+ */
+const sharedObjects = new Map();
+
+/**
+ * Get or create shared Three.js objects for a model.
+ * Returns { scene, camera, pickers, viewCount, needsRebuild, controlsTarget }
+ * Note: controls are NOT shared - each view has its own controls instance
+ * that attaches to its own DOM element, but they all control the shared camera.
+ * The controlsTarget is shared so all controls orbit around the same point.
+ */
+function getSharedObjects(modelId) {
+  if (!sharedObjects.has(modelId)) {
+    sharedObjects.set(modelId, {
+      scene: null,
+      camera: null,
+      pickers: [],
+      viewCount: 0,
+      needsRebuild: true,
+      controlsTarget: null,  // Shared target for all controls instances
+    });
+  }
+  return sharedObjects.get(modelId);
+}
+
+/**
+ * Clean up shared objects when no more views exist
+ */
+function releaseSharedObjects(modelId) {
+  const shared = sharedObjects.get(modelId);
+  if (shared) {
+    shared.viewCount--;
+    debug("Release shared objects, viewCount:", shared.viewCount);
+    if (shared.viewCount <= 0) {
+      // Clean up shared Three.js objects
+      // Note: controls are per-view and disposed there, not here
+      sharedObjects.delete(modelId);
+      debug("Deleted shared objects for model:", modelId);
+    }
+  }
+}
+
+/**
  * Map of side strings to Three.js constants
  */
 const SIDE_MAP = {
@@ -870,6 +916,12 @@ function buildScene(sceneData, buffers = {}) {
  * Main render function called by anywidget
  */
 function render({ model, el }) {
+  // Get the model ID for shared object lookup
+  const modelId = model.model_id;
+  const shared = getSharedObjects(modelId);
+  shared.viewCount++;
+  debug("New view for model:", modelId, "viewCount:", shared.viewCount);
+
   // Create container
   const container = document.createElement("div");
   container.style.width = "100%";
@@ -881,7 +933,7 @@ function render({ model, el }) {
   let width = model.get("width");
   let height = model.get("height");
 
-  // Create renderer
+  // Create renderer (each view needs its own WebGL renderer)
   const renderer = new THREE.WebGLRenderer({
     antialias: model.get("antialias"),
     alpha: model.get("alpha"),
@@ -898,13 +950,15 @@ function render({ model, el }) {
 
   container.appendChild(renderer.domElement);
 
-  // State
-  let scene = null;
-  let camera = null;
-  let controls = null;
+  // Local state for this view
+  let controls = null;  // Each view has its own controls instance
   let animationId = null;
-  let pickers = [];
   let buffers = {}; // Binary buffers from Python
+
+  // Reference to shared objects (will be populated by rebuild)
+  let scene = shared.scene;
+  let camera = shared.camera;
+  let pickers = shared.pickers;
 
   /**
    * Extract binary buffers from widget state
@@ -965,37 +1019,38 @@ function render({ model, el }) {
   function updateScene() {
     const sceneData = model.get("_scene_data");
 
-    // Save current camera state
+    // Save current camera state from shared camera
     let savedCameraPosition = null;
     let savedCameraRotation = null;
     let savedControlsTarget = null;
 
-    if (camera) {
-      savedCameraPosition = camera.position.clone();
-      savedCameraRotation = camera.rotation.clone();
+    if (shared.camera) {
+      savedCameraPosition = shared.camera.position.clone();
+      savedCameraRotation = shared.camera.rotation.clone();
     }
     if (controls && controls.target) {
       savedControlsTarget = controls.target.clone();
     }
 
-    // Rebuild scene
+    // Rebuild scene (shared across all views)
     if (sceneData && Object.keys(sceneData).length > 0) {
-      scene = buildScene(sceneData, buffers);
+      shared.scene = buildScene(sceneData, buffers);
     } else {
-      scene = new THREE.Scene();
-      scene.background = new THREE.Color("#000000");
+      shared.scene = new THREE.Scene();
+      shared.scene.background = new THREE.Color("#000000");
     }
+    scene = shared.scene;
 
     // Add camera back to scene
-    if (camera) {
-      scene.add(camera);
+    if (shared.camera) {
+      scene.add(shared.camera);
 
       // Restore camera state
       if (savedCameraPosition) {
-        camera.position.copy(savedCameraPosition);
+        shared.camera.position.copy(savedCameraPosition);
       }
       if (savedCameraRotation) {
-        camera.rotation.copy(savedCameraRotation);
+        shared.camera.rotation.copy(savedCameraRotation);
       }
     }
 
@@ -1009,7 +1064,9 @@ function render({ model, el }) {
   }
 
   /**
-   * Build/rebuild scene, camera, and controls from model data (full rebuild)
+   * Build/rebuild shared scene and camera from model data.
+   * Scene and camera are shared across all views of the same widget.
+   * Each view creates its own controls instance that controls the shared camera.
    */
   function rebuild() {
     const sceneData = model.get("_scene_data");
@@ -1018,32 +1075,65 @@ function render({ model, el }) {
 
     const aspect = width / height;
 
-    // Build scene
-    if (sceneData && Object.keys(sceneData).length > 0) {
-      scene = buildScene(sceneData, buffers);
+    // Check if we need to build shared objects (first view or data changed)
+    const isFirstView = shared.scene === null;
+
+    if (isFirstView || shared.needsRebuild) {
+      debug("Building shared scene and camera (first view or rebuild needed)");
+
+      // Build scene (shared)
+      if (sceneData && Object.keys(sceneData).length > 0) {
+        shared.scene = buildScene(sceneData, buffers);
+      } else {
+        shared.scene = new THREE.Scene();
+        shared.scene.background = new THREE.Color("#000000");
+      }
+
+      // Build camera (shared)
+      shared.camera = createCamera(cameraData, aspect);
+
+      // Add camera to scene (pythreejs does this)
+      shared.scene.add(shared.camera);
+
+      // Store pickers (shared)
+      shared.pickers = [];
+      if (controlsData && controlsData.length > 0) {
+        for (const ctrlData of controlsData) {
+          if (ctrlData.type === "Picker") {
+            shared.pickers.push({
+              uuid: ctrlData.uuid,
+              event: ctrlData.event || "click",
+              controlling: ctrlData.controlling,
+              all: ctrlData.all ?? false,
+            });
+            debug("Registered picker:", ctrlData.uuid, "event:", ctrlData.event, "controlling:", ctrlData.controlling);
+          }
+        }
+      }
+
+      shared.needsRebuild = false;
     } else {
-      scene = new THREE.Scene();
-      scene.background = new THREE.Color("#000000");
+      debug("Reusing existing shared scene and camera");
     }
 
-    // Build camera
-    camera = createCamera(cameraData, aspect);
+    // Update local references to shared objects
+    scene = shared.scene;
+    camera = shared.camera;
+    pickers = shared.pickers;
 
-    // Add camera to scene (pythreejs does this)
-    scene.add(camera);
-
-    // Setup controls
+    // Dispose of old controls for this view
     if (controls) {
       controls.dispose();
       controls = null;
     }
 
-    // Store pickers for event handling
-    pickers = [];
-
+    // Create controls for THIS view (each view needs its own controls instance
+    // because controls attach to a specific DOM element, but they all control
+    // the SAME shared camera - this is how pythreejs achieves instant sync)
     if (controlsData && controlsData.length > 0) {
       for (const ctrlData of controlsData) {
         if (ctrlData.type === "OrbitControls") {
+          // Create OrbitControls attached to this view's renderer, but controlling shared camera
           controls = new OrbitControls(camera, renderer.domElement);
           controls.enableDamping = ctrlData.enableDamping ?? true;
           controls.dampingFactor = ctrlData.dampingFactor ?? 0.05;
@@ -1062,25 +1152,45 @@ function render({ model, el }) {
             controls.enableRotate = ctrlData.enableRotate ?? false;
           }
 
-          debug("OrbitControls created: enablePan=", controls.enablePan, "enableZoom=", controls.enableZoom, "enableRotate=", controls.enableRotate, "isOrtho=", camera.isOrthographicCamera);
+          debug("OrbitControls created for view, controlling shared camera");
 
-          if (ctrlData.target) {
+          // Use shared target if it exists (from another view), otherwise initialize from data
+          if (shared.controlsTarget) {
+            controls.target.copy(shared.controlsTarget);
+          } else if (ctrlData.target) {
             controls.target.set(...ctrlData.target);
+            // Store as shared target
+            shared.controlsTarget = controls.target.clone();
+          } else {
+            shared.controlsTarget = controls.target.clone();
           }
+
+          // Sync target to shared state when user interacts
+          controls.addEventListener("change", () => {
+            if (shared.controlsTarget) {
+              shared.controlsTarget.copy(controls.target);
+            }
+          });
+
         } else if (ctrlData.type === "TrackballControls") {
           controls = new TrackballControls(camera, renderer.domElement);
-          if (ctrlData.target) {
+
+          // Use shared target if it exists
+          if (shared.controlsTarget) {
+            controls.target.copy(shared.controlsTarget);
+          } else if (ctrlData.target) {
             controls.target.set(...ctrlData.target);
+            shared.controlsTarget = controls.target.clone();
+          } else {
+            shared.controlsTarget = controls.target.clone();
           }
-        } else if (ctrlData.type === "Picker") {
-          // Store picker configuration for event handling
-          pickers.push({
-            uuid: ctrlData.uuid,
-            event: ctrlData.event || "click",
-            controlling: ctrlData.controlling,  // UUID of object to pick against
-            all: ctrlData.all ?? false,
+
+          // Sync target to shared state when user interacts
+          controls.addEventListener("change", () => {
+            if (shared.controlsTarget) {
+              shared.controlsTarget.copy(controls.target);
+            }
           });
-          debug("Registered picker:", ctrlData.uuid, "event:", ctrlData.event, "controlling:", ctrlData.controlling);
         }
       }
     }
@@ -1106,6 +1216,13 @@ function render({ model, el }) {
     animationId = requestAnimationFrame(animate);
 
     if (controls) {
+      // Sync target from shared state (in case another view changed it)
+      if (shared.controlsTarget && controls.target) {
+        // Only update if different to avoid resetting during interaction
+        if (!controls.target.equals(shared.controlsTarget)) {
+          controls.target.copy(shared.controlsTarget);
+        }
+      }
       controls.update();
     }
 
@@ -1346,8 +1463,10 @@ function render({ model, el }) {
     }, HOVER_THROTTLE_MS);
   }
 
-  // Initialize
+  // Initialize - build/reuse shared scene and camera, create controls for this view
   rebuild();
+
+  // Start animation loop
   animate();
 
   // Add event listeners for picking
@@ -1359,15 +1478,25 @@ function render({ model, el }) {
 
   // Watch for model changes
   // Scene updates preserve camera position
-  model.on("change:_scene_data", updateScene);
+  model.on("change:_scene_data", () => {
+    shared.needsRebuild = true;
+    updateScene();
+  });
   // Buffer updates require scene update
   model.on("change:_buffers_changed", () => {
     updateBuffers();
-    updateScene(); // Rebuild scene with new buffers
+    shared.needsRebuild = true;
+    updateScene();
   });
   // Camera and controls updates require full rebuild
-  model.on("change:_camera_data", rebuild);
-  model.on("change:_controls_data", rebuild);
+  model.on("change:_camera_data", () => {
+    shared.needsRebuild = true;
+    rebuild();
+  });
+  model.on("change:_controls_data", () => {
+    shared.needsRebuild = true;
+    rebuild();
+  });
   model.on("change:width", onResize);
   model.on("change:height", onResize);
 
@@ -1392,6 +1521,9 @@ function render({ model, el }) {
     }
     renderer.dispose();
     container.remove();
+
+    // Release shared objects (will be deleted when viewCount reaches 0)
+    releaseSharedObjects(modelId);
   };
 }
 
