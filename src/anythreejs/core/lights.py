@@ -36,8 +36,8 @@ class AmbientLight(Object3D):
         self._intensity = value
         self._notify("intensity", old, value)
 
-    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
-        data = super().to_dict(buffer_manager=buffer_manager)
+    def to_dict(self, buffer_manager=None, flat=False) -> dict[str, Any]:
+        data = super().to_dict(buffer_manager=buffer_manager, flat=flat)
         data.update({"color": self._color, "intensity": self._intensity})
         return data
 
@@ -81,8 +81,8 @@ class DirectionalLight(Object3D):
         self._intensity = value
         self._notify("intensity", old, value)
 
-    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
-        data = super().to_dict(buffer_manager=buffer_manager)
+    def to_dict(self, buffer_manager=None, flat=False) -> dict[str, Any]:
+        data = super().to_dict(buffer_manager=buffer_manager, flat=flat)
         data.update(
             {
                 "color": self._color,
@@ -135,8 +135,8 @@ class PointLight(Object3D):
         self._intensity = value
         self._notify("intensity", old, value)
 
-    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
-        data = super().to_dict(buffer_manager=buffer_manager)
+    def to_dict(self, buffer_manager=None, flat=False) -> dict[str, Any]:
+        data = super().to_dict(buffer_manager=buffer_manager, flat=flat)
         data.update(
             {
                 "color": self._color,
@@ -166,8 +166,8 @@ class HemisphereLight(Object3D):
         self._groundColor = groundColor
         self._intensity = intensity
 
-    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
-        data = super().to_dict(buffer_manager=buffer_manager)
+    def to_dict(self, buffer_manager=None, flat=False) -> dict[str, Any]:
+        data = super().to_dict(buffer_manager=buffer_manager, flat=flat)
         data.update(
             {
                 "skyColor": self._skyColor,
@@ -225,8 +225,8 @@ class SpotLight(Object3D):
         self._intensity = value
         self._notify("intensity", old, value)
 
-    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
-        data = super().to_dict(buffer_manager=buffer_manager)
+    def to_dict(self, buffer_manager=None, flat=False) -> dict[str, Any]:
+        data = super().to_dict(buffer_manager=buffer_manager, flat=flat)
         data.update(
             {
                 "color": self._color,

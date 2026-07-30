@@ -30,7 +30,7 @@ class Scene(Object3D):
         self._background = value
         self._notify("background", old, value)
 
-    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
-        data = super().to_dict(buffer_manager=buffer_manager)
+    def to_dict(self, buffer_manager=None, flat=False) -> dict[str, Any]:
+        data = super().to_dict(buffer_manager=buffer_manager, flat=flat)
         data["background"] = self._background
         return data

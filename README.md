@@ -67,8 +67,20 @@ Renderer(
     height=600,            # Canvas height in pixels
     antialias=True,        # Enable antialiasing
     alpha=False,           # Canvas transparency
+    enable_picking=True,   # Raycast on click (fills _click_info)
+    enable_hover=False,    # Also raycast on mousemove (fills _hover_info);
+                           # off by default — costly for large point clouds
 )
 ```
+
+### Sync model
+
+Python-side changes are sent to the browser as small per-object delta
+messages (binary buffers for array data), so updating one property of a
+large scene does not re-transfer the scene. Interactive camera movement
+(orbit/pan/zoom) is synced back: `camera.position`, `camera.rotation`,
+`camera.zoom` and `controls.target` reflect the current view, and
+`camera.observe(handler, names=["position"])` fires as the user navigates.
 
 ## Interaction
 

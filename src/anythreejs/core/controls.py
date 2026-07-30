@@ -6,6 +6,12 @@ from typing import Any
 from .base import ThreeJSBase
 
 
+def _controlling_ref(controlling):
+    if controlling is None:
+        return None
+    return controlling.uuid if hasattr(controlling, "uuid") else controlling
+
+
 class OrbitControls(ThreeJSBase):
     """Orbit controls for camera manipulation."""
 
@@ -22,9 +28,10 @@ class OrbitControls(ThreeJSBase):
         enablePan: bool = True,
         autoRotate: bool = False,
         autoRotateSpeed: float = 2.0,
+        screenSpacePanning: bool = True,
         **kwargs,
     ):
-        super().__init__()
+        super().__init__(**kwargs)
         self._controlling = controlling
         self._target = list(target)
         self._enableDamping = enableDamping
@@ -34,6 +41,7 @@ class OrbitControls(ThreeJSBase):
         self._enablePan = enablePan
         self._autoRotate = autoRotate
         self._autoRotateSpeed = autoRotateSpeed
+        self._screenSpacePanning = screenSpacePanning
 
     @property
     def controlling(self):
@@ -64,6 +72,16 @@ class OrbitControls(ThreeJSBase):
         old = self._enableDamping
         self._enableDamping = value
         self._notify("enableDamping", old, value)
+
+    @property
+    def dampingFactor(self) -> float:
+        return self._dampingFactor
+
+    @dampingFactor.setter
+    def dampingFactor(self, value: float):
+        old = self._dampingFactor
+        self._dampingFactor = value
+        self._notify("dampingFactor", old, value)
 
     @property
     def enableZoom(self) -> bool:
@@ -105,11 +123,31 @@ class OrbitControls(ThreeJSBase):
         self._autoRotate = value
         self._notify("autoRotate", old, value)
 
-    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
-        return {
+    @property
+    def autoRotateSpeed(self) -> float:
+        return self._autoRotateSpeed
+
+    @autoRotateSpeed.setter
+    def autoRotateSpeed(self, value: float):
+        old = self._autoRotateSpeed
+        self._autoRotateSpeed = value
+        self._notify("autoRotateSpeed", old, value)
+
+    @property
+    def screenSpacePanning(self) -> bool:
+        return self._screenSpacePanning
+
+    @screenSpacePanning.setter
+    def screenSpacePanning(self, value: bool):
+        old = self._screenSpacePanning
+        self._screenSpacePanning = value
+        self._notify("screenSpacePanning", old, value)
+
+    def to_dict(self, buffer_manager=None, flat=False) -> dict[str, Any]:
+        data = {
             "type": self._type,
             "uuid": self._uuid,
-            "target": self._target,
+            "target": list(self._target),
             "enableDamping": self._enableDamping,
             "dampingFactor": self._dampingFactor,
             "enableZoom": self._enableZoom,
@@ -117,7 +155,11 @@ class OrbitControls(ThreeJSBase):
             "enablePan": self._enablePan,
             "autoRotate": self._autoRotate,
             "autoRotateSpeed": self._autoRotateSpeed,
+            "screenSpacePanning": self._screenSpacePanning,
         }
+        if self._controlling is not None:
+            data["controlling"] = _controlling_ref(self._controlling)
+        return data
 
 
 class TrackballControls(ThreeJSBase):
@@ -126,7 +168,7 @@ class TrackballControls(ThreeJSBase):
     _type = "TrackballControls"
 
     def __init__(self, controlling=None, target: tuple = (0, 0, 0), **kwargs):
-        super().__init__()
+        super().__init__(**kwargs)
         self._controlling = controlling
         self._target = list(target)
 
@@ -150,8 +192,15 @@ class TrackballControls(ThreeJSBase):
         self._target = list(value)
         self._notify("target", old, self._target)
 
-    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
-        return {"type": self._type, "uuid": self._uuid, "target": self._target}
+    def to_dict(self, buffer_manager=None, flat=False) -> dict[str, Any]:
+        data = {
+            "type": self._type,
+            "uuid": self._uuid,
+            "target": list(self._target),
+        }
+        if self._controlling is not None:
+            data["controlling"] = _controlling_ref(self._controlling)
+        return data
 
 
 class Picker(ThreeJSBase):
@@ -166,7 +215,7 @@ class Picker(ThreeJSBase):
         all: bool = False,
         **kwargs,
     ):
-        super().__init__()
+        super().__init__(**kwargs)
         self._controlling = controlling
         self._event = event
         self._all = all
@@ -278,7 +327,7 @@ class Picker(ThreeJSBase):
         self._modifiers = list(value)
         self._notify("modifiers", old, self._modifiers)
 
-    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
+    def to_dict(self, buffer_manager=None, flat=False) -> dict[str, Any]:
         result = {
             "type": self._type,
             "uuid": self._uuid,
@@ -286,9 +335,5 @@ class Picker(ThreeJSBase):
             "all": self._all,
         }
         if self._controlling is not None:
-            result["controlling"] = (
-                self._controlling.uuid
-                if hasattr(self._controlling, "uuid")
-                else self._controlling
-            )
+            result["controlling"] = _controlling_ref(self._controlling)
         return result

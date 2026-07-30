@@ -25,8 +25,8 @@ class AxesHelper(Object3D):
         self._size = value
         self._notify("size", old, value)
 
-    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
-        data = super().to_dict(buffer_manager=buffer_manager)
+    def to_dict(self, buffer_manager=None, flat=False) -> dict[str, Any]:
+        data = super().to_dict(buffer_manager=buffer_manager, flat=flat)
         data["size"] = self._size
         return data
 
@@ -50,8 +50,8 @@ class GridHelper(Object3D):
         self._colorCenterLine = colorCenterLine
         self._colorGrid = colorGrid
 
-    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
-        data = super().to_dict(buffer_manager=buffer_manager)
+    def to_dict(self, buffer_manager=None, flat=False) -> dict[str, Any]:
+        data = super().to_dict(buffer_manager=buffer_manager, flat=flat)
         data.update(
             {
                 "size": self._size,

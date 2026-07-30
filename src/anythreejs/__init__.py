@@ -59,6 +59,7 @@ from .core import (
     SpriteMaterial,
     LineMaterial,
     # Objects
+    RenderableObject,
     Mesh,
     Points,
     Line,
@@ -91,7 +92,12 @@ import sys as _sys
 
 p3 = _sys.modules[__name__]
 
-__version__ = "0.0.1"
+try:
+    from importlib.metadata import version as _version
+
+    __version__ = _version("anythreejs")
+except Exception:  # pragma: no cover - package not installed
+    __version__ = "0.0.0+unknown"
 
 __all__ = [
     # Renderer
@@ -133,6 +139,7 @@ __all__ = [
     "SpriteMaterial",
     "LineMaterial",
     # Objects
+    "RenderableObject",
     "Mesh",
     "Points",
     "Line",

@@ -1,0 +1,219 @@
+/**
+ * Browser-side harness for widget.js.
+ *
+ * Provides a FakeModel implementing the slice of the anywidget model API
+ * that widget.js uses (get/set/save_changes/on/off), plus helpers to boot
+ * the widget from a Python-generated snapshot, feed it Python-captured op
+ * messages, and inspect the resulting three.js world and rendered pixels.
+ *
+ * Binary payloads arrive from pytest as {"__b64__": "..."} markers and are
+ * decoded to DataViews — exactly what the real widget manager delivers
+ * after extracting binary buffers.
+ */
+
+function b64ToDataView(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new DataView(bytes.buffer);
+}
+
+function decode(node) {
+  if (node === null || typeof node !== "object") return node;
+  if (Array.isArray(node)) return node.map(decode);
+  if (typeof node.__b64__ === "string") return b64ToDataView(node.__b64__);
+  const out = {};
+  for (const [key, value] of Object.entries(node)) out[key] = decode(value);
+  return out;
+}
+
+class FakeModel {
+  constructor(state) {
+    this.state = state;
+    this.listeners = new Map();
+    this.saved = [];
+    this.pending = {};
+  }
+
+  get(key) {
+    return this.state[key];
+  }
+
+  set(key, value) {
+    this.state[key] = value;
+    this.pending[key] = value;
+  }
+
+  save_changes() {
+    this.saved.push(JSON.parse(JSON.stringify(this.pending)));
+    this.pending = {};
+  }
+
+  on(event, callback) {
+    if (!this.listeners.has(event)) this.listeners.set(event, []);
+    this.listeners.get(event).push(callback);
+  }
+
+  off(event, callback) {
+    const list = this.listeners.get(event) ?? [];
+    const index = list.indexOf(callback);
+    if (index >= 0) list.splice(index, 1);
+  }
+
+  emit(event, ...args) {
+    for (const callback of [...(this.listeners.get(event) ?? [])]) {
+      callback(...args);
+    }
+  }
+}
+
+const harness = {
+  module: null,
+  model: null,
+  world: null,
+  view: null,
+  cleanups: [],
+
+  async boot(payload) {
+    // Tear down any previous widget instance on this page.
+    while (this.cleanups.length) this.cleanups.pop()();
+
+    const state = {
+      width: 200,
+      height: 150,
+      antialias: false,
+      alpha: false,
+      enable_picking: true,
+      enable_hover: false,
+      _hover_info: {},
+      _click_info: {},
+      _picker_event: {},
+      _camera_state: {},
+      ...decode(payload.state ?? {}),
+      _scene_state: decode(payload.scene_state ?? {}),
+    };
+
+    this.module = (await import("/widget.js")).default;
+    this.model = new FakeModel(state);
+
+    const initCleanup = this.module.initialize({ model: this.model });
+    if (initCleanup) this.cleanups.push(initCleanup);
+
+    const el = document.getElementById("root");
+    el.innerHTML = "";
+    const renderCleanup = this.module.render({ model: this.model, el });
+    if (renderCleanup) this.cleanups.push(renderCleanup);
+
+    this.world = this.model._anythreejsWorld;
+    this.view = [...this.world.views][0];
+    return this.summary();
+  },
+
+  applyMessages(messages) {
+    for (const message of messages) {
+      const buffers = (message.buffers ?? []).map(b64ToDataView);
+      this.model.emit("msg:custom", message.content, buffers);
+    }
+    return this.summary();
+  },
+
+  setSceneState(payload) {
+    this.model.state._scene_state = decode(payload);
+    this.model.emit("change:_scene_state");
+    return this.summary();
+  },
+
+  summary() {
+    const world = this.world;
+    const byType = {};
+    for (const [, spec] of world.specs) {
+      byType[spec.type] = (byType[spec.type] ?? 0) + 1;
+    }
+    let sceneNodes = 0;
+    if (world.scene) world.scene.traverse(() => sceneNodes++);
+    return {
+      registry: world.objects.size,
+      specs: world.specs.size,
+      byType,
+      sceneNodes,
+      epoch: world.lastEpoch,
+      camera: this.cameraPose(),
+    };
+  },
+
+  cameraPose() {
+    const camera = this.world.camera;
+    if (!camera) return null;
+    return {
+      position: camera.position.toArray(),
+      rotation: [camera.rotation.x, camera.rotation.y, camera.rotation.z],
+      zoom: camera.zoom,
+    };
+  },
+
+  /** Serializable inspection of one registry object by uuid. */
+  object(uuid) {
+    const obj = this.world.objects.get(uuid);
+    if (!obj) return null;
+    const out = { type: obj.type ?? obj.constructor.name };
+    if (obj.isBufferGeometry) {
+      out.attributes = {};
+      for (const [name, attr] of Object.entries(obj.attributes)) {
+        out.attributes[name] = {
+          length: attr.array.length,
+          itemSize: attr.itemSize,
+          first: [...attr.array.slice(0, Math.min(6, attr.array.length))],
+        };
+      }
+      out.index = obj.index ? obj.index.array.length : null;
+      if (!obj.boundingSphere) obj.computeBoundingSphere();
+      out.boundingSphereRadius = obj.boundingSphere.radius;
+      if (obj.parameters) out.parameters = obj.parameters;
+    }
+    if (obj.isMaterial) {
+      out.colorHex = obj.color ? obj.color.getHexString() : null;
+      out.opacity = obj.opacity;
+      out.transparent = obj.transparent;
+    }
+    if (obj.isObject3D) {
+      out.position = obj.position.toArray();
+      out.visible = obj.visible;
+      out.children = obj.children.length;
+    }
+    return out;
+  },
+
+  /** Force a render and report live GPU resource counts. */
+  renderInfo() {
+    this.view.renderer.render(this.world.scene, this.world.camera);
+    const memory = this.view.renderer.info.memory;
+    return { geometries: memory.geometries, textures: memory.textures };
+  },
+
+  /** Read one pixel at fractional canvas coordinates (0..1). */
+  readPixel(fx, fy) {
+    const renderer = this.view.renderer;
+    renderer.render(this.world.scene, this.world.camera);
+    const gl = renderer.getContext();
+    const x = Math.floor(fx * (gl.drawingBufferWidth - 1));
+    const y = Math.floor(fy * (gl.drawingBufferHeight - 1));
+    const px = new Uint8Array(4);
+    gl.readPixels(
+      x,
+      gl.drawingBufferHeight - 1 - y,
+      1,
+      1,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      px
+    );
+    return [...px];
+  },
+
+  savedStates() {
+    return this.model.saved;
+  },
+};
+
+window.harness = harness;
+window.harnessReady = true;

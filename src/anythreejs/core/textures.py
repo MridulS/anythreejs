@@ -3,7 +3,11 @@ Texture classes.
 """
 
 from typing import Any
+
+import numpy as np
+
 from .base import ThreeJSBase
+from .buffer import binary_wrapper
 
 
 class TextTexture(ThreeJSBase):
@@ -17,13 +21,15 @@ class TextTexture(ThreeJSBase):
         color: str = "white",
         size: int = 100,
         fontFace: str = "Arial",
+        squareTexture: bool = False,
         **kwargs,
     ):
-        super().__init__()
+        super().__init__(**kwargs)
         self._string = string
         self._color = color
         self._size = size
         self._fontFace = fontFace
+        self._squareTexture = squareTexture
 
     @property
     def string(self) -> str:
@@ -35,7 +41,17 @@ class TextTexture(ThreeJSBase):
         self._string = value
         self._notify("string", old, value)
 
-    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
+    @property
+    def color(self) -> str:
+        return self._color
+
+    @color.setter
+    def color(self, value: str):
+        old = self._color
+        self._color = value
+        self._notify("color", old, value)
+
+    def to_dict(self, buffer_manager=None, flat=False) -> dict[str, Any]:
         return {
             "type": self._type,
             "uuid": self._uuid,
@@ -43,6 +59,7 @@ class TextTexture(ThreeJSBase):
             "color": self._color,
             "size": self._size,
             "fontFace": self._fontFace,
+            "squareTexture": self._squareTexture,
         }
 
 
@@ -65,7 +82,7 @@ class DataTexture(ThreeJSBase):
         minFilter: str = "LinearFilter",
         **kwargs,
     ):
-        super().__init__()
+        super().__init__(**kwargs)
         self._data = data
         self._width = width
         self._height = height
@@ -107,9 +124,7 @@ class DataTexture(ThreeJSBase):
         self._height = value
         self._notify("height", old, value)
 
-    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
-        import numpy as np
-
+    def to_dict(self, buffer_manager=None, flat=False) -> dict[str, Any]:
         result = {
             "type": self._type,
             "uuid": self._uuid,
@@ -126,30 +141,18 @@ class DataTexture(ThreeJSBase):
 
         if self._data is not None:
             d = self._data
-            # Convert to numpy array to get shape info
             if not isinstance(d, np.ndarray):
                 d = np.array(d)
 
-            # Infer width/height from shape if not provided
-            # Expected shape is (height, width) or (height, width, channels)
+            # Infer width/height from shape if not provided.
+            # Expected shape is (height, width) or (height, width, channels).
             if width is None and height is None and len(d.shape) >= 2:
                 height = d.shape[0]
                 width = d.shape[1]
 
-            # Use binary buffer transfer if buffer_manager is available
-            if buffer_manager is not None:
-                # Flatten and ensure contiguous for efficient transfer
-                flat_data = d.flatten()
-                if not flat_data.flags.c_contiguous:
-                    flat_data = np.ascontiguousarray(flat_data)
-
-                # Register buffer and store reference
-                buffer_id = buffer_manager.register_buffer(flat_data)
-                result["bufferRef"] = buffer_id
-                result["dataType"] = str(flat_data.dtype)
-                result["count"] = len(flat_data)
+            if flat:
+                result["data"] = binary_wrapper(d)
             else:
-                # Use JSON serialization
                 result["data"] = d.flatten().tolist()
 
         if width is not None:

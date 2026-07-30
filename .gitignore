@@ -215,3 +215,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# Reference checkout of the original pythreejs (not part of this repo)
+pythreejs/
+
+# Scratch notebooks
+Untitled*.ipynb
+
+# Playwright harness cache (recorded esm.sh responses)
+tests/harness/.cache/

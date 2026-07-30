@@ -3,30 +3,42 @@ Base classes for Three.js objects with observable properties.
 
 All Three.js objects inherit from these base classes which provide:
 - Property change observation (like ipywidgets traitlets)
-- Serialization to dict for JSON transport to JavaScript
-- UUID for object identification
+- Attachment to one or more Renderer widgets, which receive fine-grained
+  change events and translate them into delta ops sent to JavaScript
+- Serialization to dict for JSON transport (nested form for the snapshot
+  produced with ``flat=False``, normalized uuid-referencing form with
+  ``flat=True``)
+- UUID for object identification across the Python/JS boundary
 """
 
 from contextlib import contextmanager
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterator
 import uuid
+import warnings
 
 
 class ThreeJSBase:
     """
     Base class for all Three.js object representations.
 
-    Provides observable properties and serialization.
+    Provides observable properties, renderer attachment, and serialization.
     """
 
     _type: str = "Object3D"
 
-    def __init__(self):
+    def __init__(self, **kwargs):
         self._uuid = str(uuid.uuid4())
         self._observers: dict[str, list[Callable]] = {}
-        self._parent_renderer: Optional[Any] = None
-        self._hold_notifications = False
+        self._renderers: set = set()
+        self._hold_depth = 0
         self._pending_notifications: list[tuple[str, Any, Any]] = []
+        self._batched_renderers: set = set()
+        if kwargs:
+            warnings.warn(
+                f"{type(self).__name__}: ignoring unsupported arguments "
+                f"{sorted(kwargs)}",
+                stacklevel=3,
+            )
 
     @property
     def uuid(self) -> str:
@@ -66,51 +78,80 @@ class ThreeJSBase:
 
     @contextmanager
     def hold_trait_notifications(self):
-        """Context manager to hold notifications until exit, then batch them."""
-        self._hold_notifications = True
-        self._pending_notifications = []
+        """Context manager to hold notifications until exit, then batch them.
+
+        Re-entrant: only the outermost context releases the held
+        notifications. Attached renderers batch all resulting ops into a
+        single message.
+        """
+        self._hold_depth += 1
+        if self._hold_depth == 1:
+            self._batched_renderers = set(self._renderers)
+            for renderer in self._batched_renderers:
+                renderer._begin_batch()
         try:
             yield
         finally:
-            self._hold_notifications = False
-            # Send a single render request after all changes
-            if self._pending_notifications and self._parent_renderer is not None:
-                self._parent_renderer._request_render()
-            # Notify observers of all pending changes
-            for name, old, new in self._pending_notifications:
-                change = {"name": name, "old": old, "new": new, "owner": self}
-                for handler in self._observers.get(name, []):
-                    handler(change)
-                for handler in self._observers.get("_all", []):
-                    handler(change)
-            self._pending_notifications = []
+            self._hold_depth -= 1
+            if self._hold_depth == 0:
+                pending = self._pending_notifications
+                self._pending_notifications = []
+                batched = self._batched_renderers
+                self._batched_renderers = set()
+                try:
+                    for name, old, new in pending:
+                        self._dispatch(name, old, new)
+                finally:
+                    for renderer in batched:
+                        renderer._end_batch()
 
     def _notify(self, name: str, old: Any, new: Any):
-        """Notify observers of a property change."""
-        if self._hold_notifications:
+        """Notify observers and attached renderers of a property change."""
+        if self._hold_depth > 0:
             self._pending_notifications.append((name, old, new))
             return
+        self._dispatch(name, old, new)
 
+    def _dispatch(self, name: str, old: Any, new: Any):
         change = {"name": name, "old": old, "new": new, "owner": self}
-
-        for handler in self._observers.get(name, []):
+        for handler in list(self._observers.get(name, [])):
             handler(change)
-        for handler in self._observers.get("_all", []):
+        for handler in list(self._observers.get("_all", [])):
             handler(change)
+        for renderer in tuple(self._renderers):
+            renderer._on_object_change(self, name, old, new)
 
-        if self._parent_renderer is not None:
-            self._parent_renderer._request_render()
+    def _owned_objects(self) -> Iterator["ThreeJSBase"]:
+        """Yield directly referenced ThreeJSBase objects (children, geometry,
+        material, textures...). Used for renderer attachment, dependency
+        ordering of create ops, and reachability GC."""
+        return iter(())
 
-    def _set_renderer(self, renderer):
-        """Set the parent renderer for sync."""
-        self._parent_renderer = renderer
+    def _attach_renderer(self, renderer):
+        """Attach a renderer to this object and everything it references."""
+        if renderer in self._renderers:
+            return
+        self._renderers.add(renderer)
+        renderer._register_object(self)
+        for obj in self._owned_objects():
+            obj._attach_renderer(renderer)
 
-    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
+    def _detach_renderer(self, renderer):
+        """Detach a renderer from this object only (non-recursive — shared
+        subgraphs make recursive detach unsafe; the renderer's reachability
+        GC is the authority for detaching entire subtrees)."""
+        self._renderers.discard(renderer)
+        renderer._unregister_object(self)
+
+    def to_dict(self, buffer_manager=None, flat=False) -> dict[str, Any]:
         """
         Serialize to dictionary for JSON transport.
 
         Args:
-            buffer_manager: Optional BufferManager for binary data transfer
+            buffer_manager: Unused, kept for backwards compatibility.
+            flat: When True, referenced objects are serialized as uuid
+                strings and array data as binary wrappers, for the
+                normalized snapshot / delta protocol.
         """
         return {"type": self._type, "uuid": self._uuid}
 
@@ -131,13 +172,26 @@ class Object3D(ThreeJSBase):
         name: str = "",
         **kwargs,
     ):
-        super().__init__()
+        super().__init__(**kwargs)
         self._position = list(position)
-        self._rotation = list(rotation)
+        self._rotation = self._coerce_rotation(rotation)
         self._scale = list(scale)
         self._visible = visible
         self._name = name
         self._children: list["Object3D"] = []
+
+    @staticmethod
+    def _coerce_rotation(value) -> list:
+        """Accept (x, y, z) or the pythreejs-style (x, y, z, order)."""
+        value_list = list(value)
+        if len(value_list) == 4 and isinstance(value_list[3], str):
+            return value_list
+        if len(value_list) != 3:
+            raise ValueError(
+                f"rotation must have 3 elements (x, y, z) or 4 elements "
+                f"(x, y, z, order), got {len(value_list)}"
+            )
+        return value_list
 
     @property
     def position(self) -> tuple:
@@ -160,13 +214,8 @@ class Object3D(ThreeJSBase):
 
     @rotation.setter
     def rotation(self, value):
-        value_list = list(value)
-        if len(value_list) != 3:
-            raise ValueError(
-                f"rotation must have exactly 3 elements, got {len(value_list)}"
-            )
         old = self._rotation
-        self._rotation = value_list
+        self._rotation = self._coerce_rotation(value)
         self._notify("rotation", old, self._rotation)
 
     @property
@@ -229,46 +278,61 @@ class Object3D(ThreeJSBase):
     def children(self) -> list:
         return self._children
 
-    def add(self, *objects: "Object3D"):
-        """Add child objects. Handles both individual objects and lists."""
+    def _flatten(self, objects) -> list["Object3D"]:
+        flat = []
         for obj in objects:
             if isinstance(obj, (list, tuple)):
-                self.add(*obj)
-            elif obj not in self._children:
+                flat.extend(self._flatten(obj))
+            else:
+                flat.append(obj)
+        return flat
+
+    def add(self, *objects: "Object3D"):
+        """Add child objects. Handles both individual objects and lists."""
+        added = []
+        for obj in self._flatten(objects):
+            if obj not in self._children:
                 self._children.append(obj)
-                if self._parent_renderer:
-                    obj._set_renderer(self._parent_renderer)
-        self._notify("children", None, self._children)
+                added.append(obj)
+        if added:
+            for renderer in tuple(self._renderers):
+                renderer._on_children_added(self, added)
+            self._notify("children", None, self._children)
 
     def remove(self, *objects: "Object3D"):
         """Remove child objects. Handles both individual objects and lists."""
-        for obj in objects:
-            if isinstance(obj, (list, tuple)):
-                self.remove(*obj)
-            elif obj in self._children:
+        removed = []
+        for obj in self._flatten(objects):
+            if obj in self._children:
                 self._children.remove(obj)
-                obj._set_renderer(None)
-        self._notify("children", None, self._children)
+                removed.append(obj)
+        if removed:
+            for renderer in tuple(self._renderers):
+                renderer._on_children_removed(self, removed)
+            self._notify("children", None, self._children)
 
-    def _set_renderer(self, renderer):
-        """Recursively set renderer on self and children."""
-        super()._set_renderer(renderer)
-        for child in self._children:
-            child._set_renderer(renderer)
+    def _owned_objects(self) -> Iterator[ThreeJSBase]:
+        return iter(self._children)
 
-    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
-        data = super().to_dict(buffer_manager=buffer_manager)
+    def to_dict(self, buffer_manager=None, flat=False) -> dict[str, Any]:
+        data = super().to_dict(buffer_manager=buffer_manager, flat=flat)
         data.update(
             {
-                "position": self._position,
-                "rotation": self._rotation,
-                "scale": self._scale,
+                "position": list(self._position),
+                "rotation": list(self._rotation[:3]),
+                "scale": list(self._scale),
                 "visible": self._visible,
                 "name": self._name,
             }
         )
+        if len(self._rotation) == 4:
+            data["rotationOrder"] = self._rotation[3]
         if self._children:
-            data["children"] = [
-                child.to_dict(buffer_manager=buffer_manager) for child in self._children
-            ]
+            if flat:
+                data["children"] = [child.uuid for child in self._children]
+            else:
+                data["children"] = [
+                    child.to_dict(buffer_manager=buffer_manager)
+                    for child in self._children
+                ]
         return data

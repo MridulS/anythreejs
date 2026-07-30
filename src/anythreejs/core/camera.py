@@ -93,8 +93,8 @@ class PerspectiveCamera(Object3D):
 
         self._notify("lookAt", old, self._lookAt)
 
-    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
-        data = super().to_dict(buffer_manager=buffer_manager)
+    def to_dict(self, buffer_manager=None, flat=False) -> dict[str, Any]:
+        data = super().to_dict(buffer_manager=buffer_manager, flat=flat)
         data.update(
             {
                 "fov": self._fov,
@@ -229,8 +229,8 @@ class OrthographicCamera(Object3D):
 
         self._notify("lookAt", old, self._lookAt)
 
-    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
-        data = super().to_dict(buffer_manager=buffer_manager)
+    def to_dict(self, buffer_manager=None, flat=False) -> dict[str, Any]:
+        data = super().to_dict(buffer_manager=buffer_manager, flat=flat)
         data.update(
             {
                 "left": self._left,

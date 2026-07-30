@@ -2,34 +2,84 @@
 Buffer attribute classes for custom geometry data.
 """
 
-from typing import Any, Optional, Callable, Union
+from typing import Any, Callable, Optional, Union
 import numpy as np
 
 
+def binary_wrapper(array: np.ndarray, dtype=None) -> dict[str, Any]:
+    """Wrap a numpy array as ``{"dtype": ..., "data": memoryview}`` for
+    binary transport. The memoryview is extracted into a binary buffer by
+    the widget protocol (snapshot trait) or by the op flusher (delta
+    messages)."""
+    arr = np.asarray(array)
+    if dtype is not None and arr.dtype != np.dtype(dtype):
+        arr = arr.astype(dtype)
+    flat = np.ascontiguousarray(arr).reshape(-1)
+    return {"dtype": str(flat.dtype), "data": memoryview(flat).cast("B")}
+
+
+# WebGL has no 64-bit attribute types (and JS no Float16/64 typed-array
+# support we rely on), so wide dtypes narrow at the boundary.
+_DTYPE_NARROWING = {
+    "float64": "float32",
+    "float16": "float32",
+    "int64": "int32",
+    "uint64": "uint32",
+}
+
+
+def _infer_dtype(array) -> str:
+    arr = np.asarray(array)
+    name = str(arr.dtype)
+    if name in _DTYPE_NARROWING:
+        return _DTYPE_NARROWING[name]
+    if arr.dtype.kind in "fiu":
+        return name
+    return "float32"
+
+
 class BufferAttribute:
-    """Stores data for BufferGeometry attributes."""
+    """Stores data for BufferGeometry attributes.
+
+    Like pythreejs, the dtype follows the array you pass in (narrowed to a
+    WebGL-representable width); assigning a new array later coerces it back
+    to the attribute's dtype.
+    """
 
     def __init__(
         self,
         array: Union[list, np.ndarray],
         itemSize: int = 3,
         normalized: bool = False,
-        dtype: str = "float32",
+        dtype: str = None,
     ):
-        self._array = (
-            np.array(array, dtype=dtype) if not isinstance(array, np.ndarray) else array
-        )
+        self._dtype = dtype if dtype is not None else _infer_dtype(array)
+        self._array = self._coerce(array)
         self._itemSize = itemSize
         self._normalized = normalized
-        self._dtype = dtype
-        self._on_change: Optional[Callable] = None
+        self._on_change_callbacks: list[Callable] = []
+
+    def _coerce(self, value) -> np.ndarray:
+        arr = np.asarray(value)
+        if arr.dtype != np.dtype(self._dtype):
+            arr = arr.astype(self._dtype)
+        return arr
+
+    def _add_on_change(self, callback: Callable):
+        if callback not in self._on_change_callbacks:
+            self._on_change_callbacks.append(callback)
+
+    def _remove_on_change(self, callback: Callable):
+        if callback in self._on_change_callbacks:
+            self._on_change_callbacks.remove(callback)
 
     def _set_on_change(self, callback: Optional[Callable]):
-        self._on_change = callback
+        """Legacy single-callback API; prefer _add_on_change."""
+        self._on_change_callbacks = [callback] if callback else []
 
     def _notify_change(self):
-        if self._on_change:
-            self._on_change()
+        for callback in list(self._on_change_callbacks):
+            callback()
 
     @property
     def array(self) -> np.ndarray:
@@ -37,11 +87,7 @@ class BufferAttribute:
 
     @array.setter
     def array(self, value):
-        self._array = (
-            np.array(value, dtype=self._dtype)
-            if not isinstance(value, np.ndarray)
-            else value
-        )
+        self._array = self._coerce(value)
         self._notify_change()
 
     @property
@@ -54,35 +100,17 @@ class BufferAttribute:
 
     @property
     def count(self) -> int:
-        return len(self._array) // self._itemSize
+        return int(self._array.size) // self._itemSize
 
-    def to_dict(self, buffer_manager=None) -> dict[str, Any]:
-        result = {
+    def to_dict(self, buffer_manager=None, flat=False) -> dict[str, Any]:
+        result: dict[str, Any] = {
             "itemSize": self._itemSize,
             "normalized": self._normalized,
         }
-
-        # Use binary buffer transfer if buffer_manager is available
-        if buffer_manager is not None and hasattr(self._array, "flatten"):
-            # Flatten and ensure contiguous for efficient transfer
-            flat_array = self._array.flatten()
-            if not flat_array.flags.c_contiguous:
-                flat_array = np.ascontiguousarray(flat_array)
-
-            # Register buffer and store reference
-            buffer_id = buffer_manager.register_buffer(flat_array)
-            result["bufferRef"] = buffer_id
-            result["dtype"] = str(flat_array.dtype)
-            result["count"] = len(flat_array)
+        if flat:
+            result.update(binary_wrapper(self._array))
         else:
-            # Use JSON serialization
-            arr = (
-                self._array.flatten().tolist()
-                if hasattr(self._array, "tolist")
-                else self._array
-            )
-            result["array"] = arr
-
+            result["array"] = self._array.reshape(-1).tolist()
         return result
 
 

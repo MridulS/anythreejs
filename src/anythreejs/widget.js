@@ -1,7 +1,19 @@
 /**
  * anythreejs - Renderer widget
  *
- * Three.js rendering using anywidget
+ * Three.js rendering using anywidget.
+ *
+ * Architecture:
+ * - One `World` per widget model (created in `initialize`): holds the
+ *   uuid -> spec map and uuid -> three.js object registry, and applies
+ *   the normalized `_scene_state` snapshot plus incremental delta ops
+ *   arriving as custom messages (create/update/buffer/child_add/
+ *   child_remove/remove). Removal disposes GPU resources.
+ * - One `View` per display (created in `render`): its own WebGLRenderer,
+ *   controls instance and event listeners, all rendering the shared
+ *   World scene/camera. Interactive camera pose is synced back to Python
+ *   through the `_camera_state` trait, throttled and tagged with the last
+ *   applied epoch so Python can drop stale updates.
  */
 
 import * as THREE from "https://esm.sh/three@0.182.0";
@@ -17,57 +29,13 @@ const debug = (...args) => DEBUG && console.log("[anythreejs]", ...args);
 
 // Performance constants
 const PICKER_THROTTLE_MS = 16; // ~60fps for picker mousemove events
-const HOVER_THROTTLE_MS = 50;  // 50ms throttle for hover detection
+const HOVER_THROTTLE_MS = 50; // 50ms throttle for hover detection
+const CAMERA_SYNC_THROTTLE_MS = 50; // camera pose sync-back to Python
 
-/**
- * Global store for shared Three.js objects across multiple views of the same widget.
- * This is the key to pythreejs-like behavior - all views share the SAME Three.js
- * scene, camera, and controls objects, so moving the camera in one view instantly
- * moves it in all other views.
- */
-const sharedObjects = new Map();
+// ---------------------------------------------------------------------------
+// Constant maps
+// ---------------------------------------------------------------------------
 
-/**
- * Get or create shared Three.js objects for a model.
- * Returns { scene, camera, pickers, viewCount, needsRebuild, controlsTarget }
- * Note: controls are NOT shared - each view has its own controls instance
- * that attaches to its own DOM element, but they all control the shared camera.
- * The controlsTarget is shared so all controls orbit around the same point.
- */
-function getSharedObjects(modelId) {
-  if (!sharedObjects.has(modelId)) {
-    sharedObjects.set(modelId, {
-      scene: null,
-      camera: null,
-      pickers: [],
-      viewCount: 0,
-      needsRebuild: true,
-      controlsTarget: null,  // Shared target for all controls instances
-    });
-  }
-  return sharedObjects.get(modelId);
-}
-
-/**
- * Clean up shared objects when no more views exist
- */
-function releaseSharedObjects(modelId) {
-  const shared = sharedObjects.get(modelId);
-  if (shared) {
-    shared.viewCount--;
-    debug("Release shared objects, viewCount:", shared.viewCount);
-    if (shared.viewCount <= 0) {
-      // Clean up shared Three.js objects
-      // Note: controls are per-view and disposed there, not here
-      sharedObjects.delete(modelId);
-      debug("Deleted shared objects for model:", modelId);
-    }
-  }
-}
-
-/**
- * Map of side strings to Three.js constants
- */
 const SIDE_MAP = {
   FrontSide: THREE.FrontSide,
   BackSide: THREE.BackSide,
@@ -77,365 +45,399 @@ const SIDE_MAP = {
   double: THREE.DoubleSide,
 };
 
+const FORMAT_MAP = {
+  RGBFormat: THREE.RGBFormat,
+  RGBAFormat: THREE.RGBAFormat,
+  RedFormat: THREE.RedFormat,
+  RGFormat: THREE.RGFormat,
+  AlphaFormat: THREE.AlphaFormat,
+};
+
+const TYPE_MAP = {
+  UnsignedByteType: THREE.UnsignedByteType,
+  ByteType: THREE.ByteType,
+  ShortType: THREE.ShortType,
+  UnsignedShortType: THREE.UnsignedShortType,
+  IntType: THREE.IntType,
+  UnsignedIntType: THREE.UnsignedIntType,
+  FloatType: THREE.FloatType,
+  HalfFloatType: THREE.HalfFloatType,
+};
+
+const WRAP_MAP = {
+  ClampToEdgeWrapping: THREE.ClampToEdgeWrapping,
+  RepeatWrapping: THREE.RepeatWrapping,
+  MirroredRepeatWrapping: THREE.MirroredRepeatWrapping,
+};
+
+const FILTER_MAP = {
+  NearestFilter: THREE.NearestFilter,
+  LinearFilter: THREE.LinearFilter,
+  NearestMipmapNearestFilter: THREE.NearestMipmapNearestFilter,
+  NearestMipmapLinearFilter: THREE.NearestMipmapLinearFilter,
+  LinearMipmapNearestFilter: THREE.LinearMipmapNearestFilter,
+  LinearMipmapLinearFilter: THREE.LinearMipmapLinearFilter,
+};
+
+const GEOMETRY_TYPES = new Set([
+  "BoxGeometry",
+  "SphereGeometry",
+  "PlaneGeometry",
+  "CylinderGeometry",
+  "TorusGeometry",
+  "EdgesGeometry",
+  "LineGeometry",
+  "BufferGeometry",
+]);
+
+const MATERIAL_TYPES = new Set([
+  "Material",
+  "MeshBasicMaterial",
+  "MeshStandardMaterial",
+  "MeshPhongMaterial",
+  "MeshLambertMaterial",
+  "PointsMaterial",
+  "LineBasicMaterial",
+  "LineDashedMaterial",
+  "SpriteMaterial",
+  "LineMaterial",
+]);
+
+const TEXTURE_TYPES = new Set(["DataTexture", "TextTexture"]);
+
+const HELPER_TYPES = new Set(["AxesHelper", "GridHelper"]);
+
+const CONTROL_TYPES = new Set(["OrbitControls", "TrackballControls", "Picker"]);
+
+// ---------------------------------------------------------------------------
+// Small utilities
+// ---------------------------------------------------------------------------
+
 /**
- * Convert vertexColors value to boolean
- * Old pythreejs used 'VertexColors' string, new Three.js uses boolean
+ * Build a THREE.Color from a CSS-ish string. Unlike THREE.Color, this
+ * accepts 8-digit (#rrggbbaa) and 4-digit (#rgba) hex by dropping alpha —
+ * matplotlib's to_hex(keep_alpha=True) produces these.
  */
-function parseVertexColors(value) {
-  if (value === 'VertexColors' || value === true) {
-    return true;
+function colorOf(value, fallback = "#ffffff") {
+  let v = value ?? fallback;
+  if (typeof v === "string" && v.startsWith("#")) {
+    if (v.length === 9) v = v.slice(0, 7);
+    else if (v.length === 5) v = v.slice(0, 4);
   }
-  return false;
+  return new THREE.Color(v);
 }
 
 /**
- * Helper to convert dtype string to TypedArray constructor
+ * Convert vertexColors value to boolean.
+ * Old pythreejs used 'VertexColors' string, new Three.js uses boolean.
  */
-function getTypedArrayConstructor(dtype) {
+function parseVertexColors(value) {
+  return value === "VertexColors" || value === true;
+}
+
+function typedArrayFor(dtype) {
   if (!dtype) return Float32Array;
-
-  const dtypeLower = dtype.toLowerCase();
-  if (dtypeLower.includes('float32')) return Float32Array;
-  if (dtypeLower.includes('float64')) return Float64Array;
-  if (dtypeLower.includes('int32')) return Int32Array;
-  if (dtypeLower.includes('uint32')) return Uint32Array;
-  if (dtypeLower.includes('int16')) return Int16Array;
-  if (dtypeLower.includes('uint16')) return Uint16Array;
-  if (dtypeLower.includes('int8')) return Int8Array;
-  if (dtypeLower.includes('uint8')) return Uint8Array;
-
+  const d = dtype.toLowerCase();
+  if (d.includes("float32")) return Float32Array;
+  if (d.includes("float64")) return Float64Array;
+  if (d.includes("uint32")) return Uint32Array;
+  if (d.includes("int32")) return Int32Array;
+  if (d.includes("uint16")) return Uint16Array;
+  if (d.includes("int16")) return Int16Array;
+  if (d.includes("uint8")) return Uint8Array;
+  if (d.includes("int8")) return Int8Array;
   return Float32Array;
 }
 
-/**
- * Create a Three.js geometry from serialized data
- */
-function createGeometry(data, buffers = {}) {
-  if (!data) return null;
+function isBufferWrapper(node) {
+  return (
+    node !== null &&
+    typeof node === "object" &&
+    !Array.isArray(node) &&
+    !ArrayBuffer.isView(node) &&
+    typeof node.dtype === "string" &&
+    "data" in node
+  );
+}
 
-  switch (data.type) {
+/**
+ * Turn a `{dtype, data}` wrapper into a TypedArray. `data` may be a
+ * DataView (snapshot path: the widget protocol reinserts binary buffers
+ * in place), a `{__buffer__: i}` placeholder (delta ops path, resolved
+ * against the message buffers), or a plain array (JSON fallback).
+ * The bytes are copied so the result is aligned and owns its memory.
+ */
+function toTypedArray(wrapper, buffers) {
+  const Ctor = typedArrayFor(wrapper.dtype);
+  let d = wrapper.data;
+  if (d && typeof d === "object" && !ArrayBuffer.isView(d) && "__buffer__" in d) {
+    d = buffers?.[d.__buffer__];
+  }
+  if (d instanceof DataView) {
+    return new Ctor(d.buffer.slice(d.byteOffset, d.byteOffset + d.byteLength));
+  }
+  if (d instanceof ArrayBuffer) {
+    return new Ctor(d.slice(0));
+  }
+  if (ArrayBuffer.isView(d)) {
+    return new Ctor(d.buffer.slice(d.byteOffset, d.byteOffset + d.byteLength));
+  }
+  if (Array.isArray(d)) {
+    return Ctor.from(d);
+  }
+  console.warn("anythreejs: unresolvable binary payload", wrapper);
+  return new Ctor(0);
+}
+
+/** Recursively resolve `{dtype, data}` wrappers inside a spec/props tree. */
+function resolveBuffers(node, buffers) {
+  if (node === null || typeof node !== "object") return node;
+  if (ArrayBuffer.isView(node) || node instanceof ArrayBuffer) return node;
+  if (isBufferWrapper(node)) {
+    return { ...node, data: toTypedArray(node, buffers) };
+  }
+  if (Array.isArray(node)) return node.map((v) => resolveBuffers(v, buffers));
+  const out = {};
+  for (const [key, value] of Object.entries(node)) {
+    out[key] = resolveBuffers(value, buffers);
+  }
+  return out;
+}
+
+/** Get the TypedArray for an attribute entry (wrapper or legacy forms). */
+function attributeArray(entry) {
+  if (!entry) return null;
+  if (ArrayBuffer.isView(entry)) return entry;
+  if (Array.isArray(entry)) return Uint32Array.from(entry); // bare index list
+  if (ArrayBuffer.isView(entry.data)) return entry.data;
+  if (Array.isArray(entry.data)) return typedArrayFor(entry.dtype).from(entry.data);
+  if (Array.isArray(entry.array)) return typedArrayFor(entry.dtype).from(entry.array);
+  return null;
+}
+
+/** Apply position, rotation, scale from a spec to an object. */
+function applyTransform(obj, spec) {
+  if (spec.position) obj.position.set(...spec.position);
+  if (spec.rotation) {
+    obj.rotation.set(
+      spec.rotation[0],
+      spec.rotation[1],
+      spec.rotation[2],
+      spec.rotationOrder ?? "XYZ"
+    );
+  }
+  if (spec.scale) obj.scale.set(...spec.scale);
+}
+
+// ---------------------------------------------------------------------------
+// Builders: serialized spec -> three.js object
+// ---------------------------------------------------------------------------
+
+function buildGeometry(spec, world) {
+  switch (spec.type) {
     case "BoxGeometry":
       return new THREE.BoxGeometry(
-        data.width,
-        data.height,
-        data.depth,
-        data.widthSegments,
-        data.heightSegments,
-        data.depthSegments
+        spec.width,
+        spec.height,
+        spec.depth,
+        spec.widthSegments,
+        spec.heightSegments,
+        spec.depthSegments
       );
 
     case "SphereGeometry":
       return new THREE.SphereGeometry(
-        data.radius,
-        data.widthSegments,
-        data.heightSegments,
-        data.phiStart,
-        data.phiLength,
-        data.thetaStart,
-        data.thetaLength
+        spec.radius,
+        spec.widthSegments,
+        spec.heightSegments,
+        spec.phiStart,
+        spec.phiLength,
+        spec.thetaStart,
+        spec.thetaLength
       );
 
     case "PlaneGeometry":
       return new THREE.PlaneGeometry(
-        data.width,
-        data.height,
-        data.widthSegments,
-        data.heightSegments
+        spec.width,
+        spec.height,
+        spec.widthSegments,
+        spec.heightSegments
       );
 
     case "CylinderGeometry":
       return new THREE.CylinderGeometry(
-        data.radiusTop,
-        data.radiusBottom,
-        data.height,
-        data.radialSegments,
-        data.heightSegments,
-        data.openEnded,
-        data.thetaStart,
-        data.thetaLength
+        spec.radiusTop,
+        spec.radiusBottom,
+        spec.height,
+        spec.radialSegments,
+        spec.heightSegments,
+        spec.openEnded,
+        spec.thetaStart,
+        spec.thetaLength
+      );
+
+    case "TorusGeometry":
+      return new THREE.TorusGeometry(
+        spec.radius,
+        spec.tube,
+        spec.radialSegments,
+        spec.tubularSegments,
+        spec.arc
       );
 
     case "BufferGeometry": {
       const geometry = new THREE.BufferGeometry();
-
-      if (data.attributes) {
-        for (const [name, attr] of Object.entries(data.attributes)) {
-          let array;
-
-          debug(`Processing attribute ${name}:`, attr);
-          debug(`  - Has bufferRef: ${!!attr.bufferRef}`);
-          debug(`  - Has array: ${!!attr.array}`);
-          debug(`  - Buffers available: ${Object.keys(buffers).length}`);
-
-          // Check if using binary buffer transfer
-          if (attr.bufferRef && buffers[attr.bufferRef]) {
-            debug(`  - Using binary buffer: ${attr.bufferRef}`);
-            const buffer = buffers[attr.bufferRef];
-            const TypedArrayConstructor = getTypedArrayConstructor(attr.dtype);
-            array = new TypedArrayConstructor(buffer);
-            debug(`  - Created ${TypedArrayConstructor.name} with length ${array.length}`);
-          } else if (attr.bufferRef && !buffers[attr.bufferRef]) {
-            debug(`  - WARNING: bufferRef ${attr.bufferRef} not found in buffers!`);
-            debug(`  - Available buffers: ${Object.keys(buffers).join(', ')}`);
-            // Try fallback to JSON array if available
-            if (attr.array) {
-              debug(`  - Falling back to JSON array`);
-              array = attr.array;
-              if (Array.isArray(array)) {
-                array = new Float32Array(array);
-              }
-            }
-          } else if (attr.array) {
-            // Using JSON array
-            debug(`  - Using JSON array with length ${attr.array.length}`);
-            array = attr.array;
-            if (Array.isArray(array)) {
-              array = new Float32Array(array);
-            }
-          }
-
-          if (array) {
-            const itemSize = attr.itemSize || 3;
-            geometry.setAttribute(
-              name,
-              new THREE.BufferAttribute(array, itemSize, attr.normalized)
-            );
-            debug(`  - setAttribute ${name} successful`);
-          } else {
-            debug(`  - ERROR: No array data available for attribute ${name}`);
-          }
-        }
-      }
-
-      if (data.index) {
-        let indexArray;
-
-        // Check if using binary buffer transfer
-        if (data.index.bufferRef && buffers[data.index.bufferRef]) {
-          const buffer = buffers[data.index.bufferRef];
-          const TypedArrayConstructor = getTypedArrayConstructor(data.index.dtype);
-          indexArray = new TypedArrayConstructor(buffer);
-        } else if (data.index.bufferRef && !buffers[data.index.bufferRef]) {
-          debug(`WARNING: index bufferRef ${data.index.bufferRef} not found!`);
-          // Try fallback
-          if (Array.isArray(data.index)) {
-            indexArray = new Uint32Array(data.index);
-          }
+      for (const [name, entry] of Object.entries(spec.attributes ?? {})) {
+        const array = attributeArray(entry);
+        if (array) {
+          geometry.setAttribute(
+            name,
+            new THREE.BufferAttribute(
+              array,
+              entry.itemSize ?? 3,
+              entry.normalized ?? false
+            )
+          );
         } else {
-          // Fallback to JSON array
-          indexArray = data.index;
-          if (Array.isArray(indexArray)) {
-            indexArray = new Uint32Array(indexArray);
-          }
-        }
-
-        if (indexArray) {
-          geometry.setIndex(new THREE.BufferAttribute(indexArray, 1));
+          debug("no array data for attribute", name);
         }
       }
-
-      // Compute normals if not provided
-      if (!data.attributes?.normal && data.attributes?.position) {
+      if (spec.index != null) {
+        const index = attributeArray(spec.index);
+        if (index) geometry.setIndex(new THREE.BufferAttribute(index, 1));
+      }
+      if (!spec.attributes?.normal && spec.attributes?.position) {
         geometry.computeVertexNormals();
       }
-
       return geometry;
     }
 
     case "EdgesGeometry": {
-      const sourceGeometry = data.geometry ? createGeometry(data.geometry, buffers) : null;
-      if (sourceGeometry) {
-        return new THREE.EdgesGeometry(sourceGeometry, data.thresholdAngle ?? 1);
+      const source = spec.geometry ? world.ensure(spec.geometry) : null;
+      if (source && source.isBufferGeometry) {
+        return new THREE.EdgesGeometry(source, spec.thresholdAngle ?? 1);
       }
       return new THREE.BufferGeometry();
     }
 
     case "LineGeometry": {
       const geometry = new LineGeometry();
-      if (data.positions) {
-        // Flatten if needed (could be array of [x,y,z] or flat array)
-        let positions = data.positions;
-        if (Array.isArray(positions[0])) {
-          positions = positions.flat();
-        }
-        geometry.setPositions(positions);
-      }
-      if (data.colors) {
-        let colors = data.colors;
-        if (Array.isArray(colors[0])) {
-          colors = colors.flat();
-        }
-        geometry.setColors(colors);
-      }
+      const positions = attributeArray(spec.positions) ?? flattenNested(spec.positions);
+      if (positions) geometry.setPositions(positions);
+      const colors = attributeArray(spec.colors) ?? flattenNested(spec.colors);
+      if (colors) geometry.setColors(colors);
       return geometry;
     }
 
     default:
-      console.warn(`Unknown geometry type: ${data.type}`);
-      return new THREE.BoxGeometry(1, 1, 1);
+      console.warn(`anythreejs: unknown geometry type: ${spec.type}`);
+      return null;
   }
 }
 
-/**
- * Map of format strings to Three.js constants
- */
-const FORMAT_MAP = {
-  "RGBFormat": THREE.RGBFormat,
-  "RGBAFormat": THREE.RGBAFormat,
-  "RedFormat": THREE.RedFormat,
-  "RGFormat": THREE.RGFormat,
-  "AlphaFormat": THREE.AlphaFormat,
-};
+/** Legacy JSON path: positions may be a flat list or list of [x,y,z]. */
+function flattenNested(value) {
+  if (!Array.isArray(value)) return null;
+  return Array.isArray(value[0]) ? value.flat() : value;
+}
 
-/**
- * Map of type strings to Three.js constants
- */
-const TYPE_MAP = {
-  "UnsignedByteType": THREE.UnsignedByteType,
-  "ByteType": THREE.ByteType,
-  "ShortType": THREE.ShortType,
-  "UnsignedShortType": THREE.UnsignedShortType,
-  "IntType": THREE.IntType,
-  "UnsignedIntType": THREE.UnsignedIntType,
-  "FloatType": THREE.FloatType,
-  "HalfFloatType": THREE.HalfFloatType,
-};
-
-/**
- * Map of wrapping strings to Three.js constants
- */
-const WRAP_MAP = {
-  "ClampToEdgeWrapping": THREE.ClampToEdgeWrapping,
-  "RepeatWrapping": THREE.RepeatWrapping,
-  "MirroredRepeatWrapping": THREE.MirroredRepeatWrapping,
-};
-
-/**
- * Map of filter strings to Three.js constants
- */
-const FILTER_MAP = {
-  "NearestFilter": THREE.NearestFilter,
-  "LinearFilter": THREE.LinearFilter,
-  "NearestMipmapNearestFilter": THREE.NearestMipmapNearestFilter,
-  "NearestMipmapLinearFilter": THREE.NearestMipmapLinearFilter,
-  "LinearMipmapNearestFilter": THREE.LinearMipmapNearestFilter,
-  "LinearMipmapLinearFilter": THREE.LinearMipmapLinearFilter,
-};
-
-/**
- * Create a Three.js texture from serialized data
- */
-function createTexture(data, buffers = {}) {
-  if (!data) return null;
-
-  debug("createTexture called with:", data.type, "format:", data.format, "dtype:", data.dtype);
-
-  switch (data.type) {
+function buildTexture(spec) {
+  switch (spec.type) {
     case "DataTexture": {
-      // Get format and type
-      let format = FORMAT_MAP[data.format] ?? THREE.RGBAFormat;
-      const dtype = TYPE_MAP[data.dtype] ?? THREE.UnsignedByteType;
-
-      debug("DataTexture: format=", format, "dtype=", dtype, "width=", data.width, "height=", data.height, "data length=", data.data?.length);
-
-      // Convert data to appropriate typed array
-      let array;
-      let width = data.width;
-      let height = data.height;
-
-      // Check if using binary buffer transfer
-      if (data.bufferRef && buffers[data.bufferRef]) {
-        const buffer = buffers[data.bufferRef];
-        const TypedArrayConstructor = getTypedArrayConstructor(data.dataType);
-        array = new TypedArrayConstructor(buffer);
-      } else if (data.data) {
-        // Fallback to JSON array
-        array = data.data;
-        if (Array.isArray(array)) {
-          // Determine array type based on dtype
-          if (dtype === THREE.FloatType) {
-            array = new Float32Array(array);
-          } else if (dtype === THREE.HalfFloatType) {
-            array = new Float32Array(array); // Three.js will convert
-          } else if (dtype === THREE.UnsignedByteType) {
-            array = new Uint8Array(array);
-          } else {
-            array = new Float32Array(array);
-          }
-        }
+      let format = FORMAT_MAP[spec.format] ?? THREE.RGBAFormat;
+      let array = attributeArray(spec.data);
+      if (!array && Array.isArray(spec.data)) {
+        // Legacy JSON list: pick array kind from the declared three.js type
+        const declared = TYPE_MAP[spec.dtype] ?? THREE.UnsignedByteType;
+        array =
+          declared === THREE.FloatType || declared === THREE.HalfFloatType
+            ? Float32Array.from(spec.data)
+            : Uint8Array.from(spec.data);
+      }
+      if (!array) {
+        console.warn("anythreejs: DataTexture without data");
+        return null;
       }
 
-      // Infer dimensions if not provided
+      // The three.js texel type follows the actual array kind.
+      let dtype;
+      if (array instanceof Float32Array || array instanceof Float64Array) {
+        if (array instanceof Float64Array) array = Float32Array.from(array);
+        dtype = THREE.FloatType;
+      } else if (array instanceof Uint16Array) {
+        dtype = THREE.UnsignedShortType;
+      } else if (array instanceof Uint8Array) {
+        dtype = THREE.UnsignedByteType;
+      } else {
+        array = Uint8Array.from(array);
+        dtype = THREE.UnsignedByteType;
+      }
+
+      let width = spec.width;
+      let height = spec.height;
       if (!width || !height) {
-        // Assume square texture if dimensions not provided
-        const channels = format === THREE.RGBAFormat ? 4 : (format === THREE.RGBFormat ? 3 : 1);
-        const pixelCount = array.length / channels;
-        width = height = Math.sqrt(pixelCount);
-        debug("DataTexture: inferred dimensions:", width, "x", height);
+        const channels =
+          format === THREE.RGBAFormat ? 4 : format === THREE.RGBFormat ? 3 : 1;
+        const pixels = array.length / channels;
+        width = height = Math.round(Math.sqrt(pixels));
+        debug("DataTexture: inferred dimensions", width, height);
       }
 
-      // RGBFormat is deprecated in newer Three.js - convert RGB to RGBA
-      if (format === THREE.RGBFormat || data.format === "RGBFormat") {
-        debug("Converting RGB to RGBA format");
-        const channels = 3;
-        const pixelCount = array.length / channels;
-        const rgbaArray = dtype === THREE.FloatType ? new Float32Array(pixelCount * 4) : new Uint8Array(pixelCount * 4);
-        for (let i = 0; i < pixelCount; i++) {
-          rgbaArray[i * 4 + 0] = array[i * 3 + 0]; // R
-          rgbaArray[i * 4 + 1] = array[i * 3 + 1]; // G
-          rgbaArray[i * 4 + 2] = array[i * 3 + 2]; // B
-          rgbaArray[i * 4 + 3] = dtype === THREE.FloatType ? 1.0 : 255; // A
+      // RGBFormat was removed from three.js - expand RGB to RGBA.
+      if (format === THREE.RGBFormat || spec.format === "RGBFormat") {
+        const pixels = array.length / 3;
+        const rgba =
+          dtype === THREE.FloatType
+            ? new Float32Array(pixels * 4)
+            : new Uint8Array(pixels * 4);
+        const alpha = dtype === THREE.FloatType ? 1.0 : 255;
+        for (let i = 0; i < pixels; i++) {
+          rgba[i * 4] = array[i * 3];
+          rgba[i * 4 + 1] = array[i * 3 + 1];
+          rgba[i * 4 + 2] = array[i * 3 + 2];
+          rgba[i * 4 + 3] = alpha;
         }
-        array = rgbaArray;
+        array = rgba;
         format = THREE.RGBAFormat;
       }
 
-      debug("Creating THREE.DataTexture with array length:", array.length, "width:", width, "height:", height, "format:", format);
-
       const texture = new THREE.DataTexture(array, width, height, format, dtype);
-      texture.wrapS = WRAP_MAP[data.wrapS] ?? THREE.ClampToEdgeWrapping;
-      texture.wrapT = WRAP_MAP[data.wrapT] ?? THREE.ClampToEdgeWrapping;
-      texture.magFilter = FILTER_MAP[data.magFilter] ?? THREE.LinearFilter;
-      texture.minFilter = FILTER_MAP[data.minFilter] ?? THREE.LinearFilter;
-
-      // Set colorspace - use Linear for float textures, sRGB for byte textures
-      if (dtype === THREE.UnsignedByteType) {
-        texture.colorSpace = THREE.SRGBColorSpace;
-      } else {
-        texture.colorSpace = THREE.LinearSRGBColorSpace;
-      }
-
-      texture.needsUpdate = true;
-
-      // Don't flip Y - the data comes in correct orientation from numpy
+      texture.wrapS = WRAP_MAP[spec.wrapS] ?? THREE.ClampToEdgeWrapping;
+      texture.wrapT = WRAP_MAP[spec.wrapT] ?? THREE.ClampToEdgeWrapping;
+      texture.magFilter = FILTER_MAP[spec.magFilter] ?? THREE.LinearFilter;
+      texture.minFilter = FILTER_MAP[spec.minFilter] ?? THREE.LinearFilter;
+      texture.colorSpace =
+        dtype === THREE.UnsignedByteType
+          ? THREE.SRGBColorSpace
+          : THREE.LinearSRGBColorSpace;
+      // Data comes in numpy row order; don't flip.
       texture.flipY = false;
-
-      debug("DataTexture created successfully:", texture);
-
+      texture.needsUpdate = true;
       return texture;
     }
 
     case "TextTexture": {
-      // Create canvas-based text texture
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      const text = data.string || "";
-      const fontSize = data.size || 100;
-      const fontFace = data.fontFace || 'Arial';
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
+      const text = spec.string || "";
+      const fontSize = spec.size || 100;
+      const fontFace = spec.fontFace || "Arial";
 
       ctx.font = `${fontSize}px ${fontFace}`;
       const metrics = ctx.measureText(text);
 
-      const width = metrics.width || fontSize;
-      const height = fontSize * 1.2;
+      const width = spec.squareTexture
+        ? Math.max(metrics.width, fontSize)
+        : metrics.width || fontSize;
+      const height = spec.squareTexture ? width : fontSize * 1.2;
 
       canvas.width = width;
       canvas.height = height;
 
       ctx.font = `${fontSize}px ${fontFace}`;
-      ctx.fillStyle = data.color || 'black';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
+      ctx.fillStyle = spec.color || "black";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
       ctx.fillText(text, width / 2, height / 2);
 
       const texture = new THREE.CanvasTexture(canvas);
@@ -444,48 +446,35 @@ function createTexture(data, buffers = {}) {
     }
 
     default:
-      console.warn(`Unknown texture type: ${data.type}`);
+      console.warn(`anythreejs: unknown texture type: ${spec.type}`);
       return null;
   }
 }
 
-/**
- * Create a Three.js material from serialized data
- */
-function createMaterial(data, buffers = {}) {
-  if (!data) return new THREE.MeshBasicMaterial();
-
-  const side = SIDE_MAP[data.side] || THREE.FrontSide;
+function buildMaterial(spec, world) {
+  const side = SIDE_MAP[spec.side] ?? THREE.FrontSide;
+  const map = spec.map ? world.ensure(spec.map) : null;
 
   const baseProps = {
-    color: new THREE.Color(data.color || "#ffffff"),
-    opacity: data.opacity ?? 1,
-    transparent: data.transparent ?? false,
-    visible: data.visible ?? true,
+    color: colorOf(spec.color),
+    opacity: spec.opacity ?? 1,
+    transparent: spec.transparent ?? false,
+    visible: spec.visible ?? true,
     side: side,
-    depthTest: data.depthTest ?? true,
-    depthWrite: data.depthWrite ?? true,
+    depthTest: spec.depthTest ?? true,
+    depthWrite: spec.depthWrite ?? true,
   };
 
-  switch (data.type) {
+  switch (spec.type) {
     case "MeshBasicMaterial": {
-      debug("Creating MeshBasicMaterial, has map:", !!data.map);
       const mat = new THREE.MeshBasicMaterial({
         ...baseProps,
-        wireframe: data.wireframe ?? false,
-        vertexColors: parseVertexColors(data.vertexColors),
+        wireframe: spec.wireframe ?? false,
+        vertexColors: parseVertexColors(spec.vertexColors),
       });
-      // Handle texture map
-      if (data.map) {
-        debug("MeshBasicMaterial: creating texture from map");
-        const texture = createTexture(data.map, buffers);
-        if (texture) {
-          mat.map = texture;
-          mat.needsUpdate = true;
-          debug("MeshBasicMaterial: map texture set successfully");
-        } else {
-          console.warn("MeshBasicMaterial: createTexture returned null");
-        }
+      if (map) {
+        mat.map = map;
+        mat.needsUpdate = true;
       }
       return mat;
     }
@@ -493,1039 +482,1103 @@ function createMaterial(data, buffers = {}) {
     case "MeshStandardMaterial":
       return new THREE.MeshStandardMaterial({
         ...baseProps,
-        roughness: data.roughness ?? 0.5,
-        metalness: data.metalness ?? 0.5,
-        wireframe: data.wireframe ?? false,
-        flatShading: data.flatShading ?? false,
-        vertexColors: parseVertexColors(data.vertexColors),
-        emissive: new THREE.Color(data.emissive || "#000000"),
-        emissiveIntensity: data.emissiveIntensity ?? 1.0,
+        roughness: spec.roughness ?? 0.5,
+        metalness: spec.metalness ?? 0.5,
+        wireframe: spec.wireframe ?? false,
+        flatShading: spec.flatShading ?? false,
+        vertexColors: parseVertexColors(spec.vertexColors),
+        emissive: colorOf(spec.emissive, "#000000"),
+        emissiveIntensity: spec.emissiveIntensity ?? 1.0,
       });
 
     case "MeshPhongMaterial":
       return new THREE.MeshPhongMaterial({
         ...baseProps,
-        shininess: data.shininess ?? 30,
-        specular: new THREE.Color(data.specular || "#111111"),
-        wireframe: data.wireframe ?? false,
-        flatShading: data.flatShading ?? false,
-        vertexColors: parseVertexColors(data.vertexColors),
+        shininess: spec.shininess ?? 30,
+        specular: colorOf(spec.specular, "#111111"),
+        wireframe: spec.wireframe ?? false,
+        flatShading: spec.flatShading ?? false,
+        vertexColors: parseVertexColors(spec.vertexColors),
       });
 
     case "MeshLambertMaterial":
       return new THREE.MeshLambertMaterial({
         ...baseProps,
-        wireframe: data.wireframe ?? false,
-        vertexColors: parseVertexColors(data.vertexColors),
+        wireframe: spec.wireframe ?? false,
+        vertexColors: parseVertexColors(spec.vertexColors),
       });
 
     case "PointsMaterial":
       return new THREE.PointsMaterial({
-        color: new THREE.Color(data.color || "#ffffff"),
-        size: data.size ?? 1,
-        sizeAttenuation: data.sizeAttenuation ?? true,
-        vertexColors: parseVertexColors(data.vertexColors),
-        opacity: data.opacity ?? 1,
-        transparent: data.transparent ?? false,
-        depthTest: data.depthTest ?? true,
-        depthWrite: data.depthWrite ?? true,
+        color: colorOf(spec.color),
+        size: spec.size ?? 1,
+        sizeAttenuation: spec.sizeAttenuation ?? true,
+        vertexColors: parseVertexColors(spec.vertexColors),
+        opacity: spec.opacity ?? 1,
+        transparent: spec.transparent ?? false,
+        depthTest: spec.depthTest ?? true,
+        depthWrite: spec.depthWrite ?? true,
       });
 
     case "LineBasicMaterial":
       return new THREE.LineBasicMaterial({
-        color: new THREE.Color(data.color || "#ffffff"),
-        linewidth: data.linewidth ?? 1,
-        vertexColors: parseVertexColors(data.vertexColors),
-        opacity: data.opacity ?? 1,
-        transparent: data.transparent ?? false,
+        color: colorOf(spec.color),
+        linewidth: spec.linewidth ?? 1,
+        vertexColors: parseVertexColors(spec.vertexColors),
+        opacity: spec.opacity ?? 1,
+        transparent: spec.transparent ?? false,
       });
 
     case "LineDashedMaterial":
       return new THREE.LineDashedMaterial({
-        color: new THREE.Color(data.color || "#ffffff"),
-        linewidth: data.linewidth ?? 1,
-        dashSize: data.dashSize ?? 3,
-        gapSize: data.gapSize ?? 1,
-        vertexColors: parseVertexColors(data.vertexColors),
-        opacity: data.opacity ?? 1,
-        transparent: data.transparent ?? false,
+        color: colorOf(spec.color),
+        linewidth: spec.linewidth ?? 1,
+        dashSize: spec.dashSize ?? 3,
+        gapSize: spec.gapSize ?? 1,
+        vertexColors: parseVertexColors(spec.vertexColors),
+        opacity: spec.opacity ?? 1,
+        transparent: spec.transparent ?? false,
       });
+
+    case "SpriteMaterial": {
+      const props = {
+        transparent: spec.transparent ?? !!map,
+        opacity: spec.opacity ?? 1,
+      };
+      if (map) props.map = map;
+      else props.color = colorOf(spec.color);
+      return new THREE.SpriteMaterial(props);
+    }
 
     case "LineMaterial": {
       const mat = new LineMaterial({
-        color: new THREE.Color(data.color || "#ffffff").getHex(),
-        linewidth: data.linewidth ?? 1,
-        vertexColors: parseVertexColors(data.vertexColors),
-        opacity: data.opacity ?? 1,
-        transparent: data.transparent ?? false,
-        dashed: data.dashed ?? false,
-        dashScale: data.dashScale ?? 1,
-        dashSize: data.dashSize ?? 1,
-        gapSize: data.gapSize ?? 1,
+        color: colorOf(spec.color).getHex(),
+        linewidth: spec.linewidth ?? 1,
+        vertexColors: parseVertexColors(spec.vertexColors),
+        opacity: spec.opacity ?? 1,
+        transparent: spec.transparent ?? false,
+        dashed: spec.dashed ?? false,
+        dashScale: spec.dashScale ?? 1,
+        dashSize: spec.dashSize ?? 1,
+        gapSize: spec.gapSize ?? 1,
       });
-      // LineMaterial needs resolution to be set
-      mat.resolution.set(window.innerWidth, window.innerHeight);
+      if (Array.isArray(spec.resolution)) {
+        mat.resolution.set(spec.resolution[0], spec.resolution[1]);
+      } else {
+        mat.resolution.set(window.innerWidth, window.innerHeight);
+      }
       return mat;
     }
 
     default:
-      console.warn(`Unknown material type: ${data.type}`);
+      console.warn(`anythreejs: unknown material type: ${spec.type}`);
       return new THREE.MeshBasicMaterial(baseProps);
   }
 }
 
-/**
- * Create a Three.js light from serialized data
- */
-function createLight(data) {
-  let light;
-
-  switch (data.type) {
-    case "AmbientLight":
-      light = new THREE.AmbientLight(
-        new THREE.Color(data.color || "#ffffff"),
-        data.intensity ?? 1
+function buildCamera(spec) {
+  let camera;
+  switch (spec.type) {
+    case "PerspectiveCamera":
+      camera = new THREE.PerspectiveCamera(
+        spec.fov ?? 50,
+        spec.aspect ?? 1,
+        spec.near ?? 0.1,
+        spec.far ?? 2000
       );
       break;
 
-    case "DirectionalLight":
-      light = new THREE.DirectionalLight(
-        new THREE.Color(data.color || "#ffffff"),
-        data.intensity ?? 1
+    case "OrthographicCamera":
+      camera = new THREE.OrthographicCamera(
+        spec.left ?? -1,
+        spec.right ?? 1,
+        spec.top ?? 1,
+        spec.bottom ?? -1,
+        spec.near ?? 0.1,
+        spec.far ?? 2000
       );
-      light.castShadow = data.castShadow ?? false;
-      if (data.target) {
-        light.target.position.set(...data.target);
-      }
-      break;
-
-    case "PointLight":
-      light = new THREE.PointLight(
-        new THREE.Color(data.color || "#ffffff"),
-        data.intensity ?? 1,
-        data.distance ?? 0,
-        data.decay ?? 2
-      );
-      light.castShadow = data.castShadow ?? false;
-      break;
-
-    case "HemisphereLight":
-      light = new THREE.HemisphereLight(
-        new THREE.Color(data.skyColor || "#ffffff"),
-        new THREE.Color(data.groundColor || "#444444"),
-        data.intensity ?? 1
-      );
-      break;
-
-    case "SpotLight":
-      light = new THREE.SpotLight(
-        new THREE.Color(data.color || "#ffffff"),
-        data.intensity ?? 1,
-        data.distance ?? 0,
-        data.angle ?? Math.PI / 6,
-        data.penumbra ?? 0,
-        data.decay ?? 2
-      );
-      light.castShadow = data.castShadow ?? false;
-      if (data.target) {
-        light.target.position.set(...data.target);
-      }
+      camera.zoom = spec.zoom ?? 1;
+      camera.updateProjectionMatrix();
       break;
 
     default:
-      console.warn(`Unknown light type: ${data.type}`);
-      return null;
+      console.warn(`anythreejs: unknown camera type: ${spec.type}`);
+      camera = new THREE.PerspectiveCamera(50, 1, 0.1, 2000);
   }
-
-  applyTransform(light, data);
-  light.name = data.name || "";
-  light.visible = data.visible !== false;
-  light.userData.uuid = data.uuid;
-
-  return light;
+  return camera;
 }
 
-/**
- * Create a helper object
- */
-function createHelper(data) {
-  let helper;
+/** Build a scene-graph node (mesh, light, helper, camera, group, ...). */
+function buildSceneNode(spec, world) {
+  let obj = null;
 
-  switch (data.type) {
-    case "GridHelper":
-      helper = new THREE.GridHelper(
-        data.size ?? 10,
-        data.divisions ?? 10,
-        new THREE.Color(data.colorCenterLine || "#444444"),
-        new THREE.Color(data.colorGrid || "#888888")
-      );
+  switch (spec.type) {
+    case "Scene":
+      obj = new THREE.Scene();
+      obj.background = spec.background ? colorOf(spec.background) : null;
       break;
 
-    case "AxesHelper":
-      helper = new THREE.AxesHelper(data.size ?? 1);
-      break;
-
-    default:
-      console.warn(`Unknown helper type: ${data.type}`);
-      return null;
-  }
-
-  applyTransform(helper, data);
-  helper.name = data.name || "";
-  helper.visible = data.visible !== false;
-  helper.userData.uuid = data.uuid;
-
-  return helper;
-}
-
-/**
- * Apply position, rotation, scale to an object
- */
-function applyTransform(obj, data) {
-  if (data.position) {
-    obj.position.set(...data.position);
-  }
-  if (data.rotation) {
-    obj.rotation.set(...data.rotation);
-  }
-  if (data.scale) {
-    obj.scale.set(...data.scale);
-  }
-}
-
-/**
- * Create a Three.js object from serialized data
- */
-function createObject(data, buffers = {}) {
-  if (!data) return null;
-
-  let obj;
-
-  switch (data.type) {
     case "Mesh": {
-      const geometry = createGeometry(data.geometry, buffers);
-      const material = createMaterial(data.material, buffers);
-      obj = new THREE.Mesh(geometry, material);
+      const geometry = spec.geometry ? world.ensure(spec.geometry) : undefined;
+      const material = spec.material ? world.ensure(spec.material) : undefined;
+      obj = new THREE.Mesh(geometry ?? undefined, material ?? undefined);
       break;
     }
 
     case "Points": {
-      const geometry = createGeometry(data.geometry, buffers) || new THREE.BufferGeometry();
-      const material = createMaterial(data.material, buffers);
-      obj = new THREE.Points(geometry, material);
+      const geometry = world.ensure(spec.geometry) ?? new THREE.BufferGeometry();
+      const material = spec.material ? world.ensure(spec.material) : undefined;
+      obj = new THREE.Points(geometry, material ?? undefined);
       break;
     }
 
     case "Line": {
-      const geometry = createGeometry(data.geometry, buffers) || new THREE.BufferGeometry();
-      const material = createMaterial(data.material, buffers);
-      obj = new THREE.Line(geometry, material);
+      const geometry = world.ensure(spec.geometry) ?? new THREE.BufferGeometry();
+      const material = spec.material ? world.ensure(spec.material) : undefined;
+      obj = new THREE.Line(geometry, material ?? undefined);
       break;
     }
 
     case "LineSegments": {
-      const geometry = createGeometry(data.geometry, buffers) || new THREE.BufferGeometry();
-      const material = createMaterial(data.material, buffers);
-      obj = new THREE.LineSegments(geometry, material);
+      const geometry = world.ensure(spec.geometry) ?? new THREE.BufferGeometry();
+      const material = spec.material ? world.ensure(spec.material) : undefined;
+      obj = new THREE.LineSegments(geometry, material ?? undefined);
       break;
     }
 
     case "Line2": {
-      const geometry = createGeometry(data.geometry, buffers) || new LineGeometry();
-      const material = createMaterial(data.material, buffers) || new LineMaterial({ color: 0xffffff });
+      const geometry = world.ensure(spec.geometry) ?? new LineGeometry();
+      const material =
+        world.ensure(spec.material) ?? new LineMaterial({ color: 0xffffff });
       obj = new Line2(geometry, material);
       obj.computeLineDistances();
       break;
     }
 
     case "Sprite": {
-      let material;
-      if (data.material) {
-        const matData = data.material;
-        if (matData.map && matData.map.string) {
-          // Create canvas-based text texture
-          const canvas = document.createElement('canvas');
-          const ctx = canvas.getContext('2d');
-          const text = matData.map.string;
-          const fontSize = matData.map.size || 100;
-          const fontFace = matData.map.fontFace || 'Arial';
-
-          ctx.font = `${fontSize}px ${fontFace}`;
-          const metrics = ctx.measureText(text);
-
-          // Make canvas square if requested
-          const width = matData.map.squareTexture
-            ? Math.max(metrics.width, fontSize)
-            : metrics.width;
-          const height = matData.map.squareTexture ? width : fontSize * 1.2;
-
-          canvas.width = width;
-          canvas.height = height;
-
-          ctx.font = `${fontSize}px ${fontFace}`;
-          ctx.fillStyle = matData.map.color || 'black';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(text, width / 2, height / 2);
-
-          const texture = new THREE.CanvasTexture(canvas);
-          material = new THREE.SpriteMaterial({
-            map: texture,
-            transparent: matData.transparent ?? true,
-            opacity: matData.opacity ?? 1,
-          });
-        } else {
-          material = new THREE.SpriteMaterial({
-            color: new THREE.Color(matData.color || '#ffffff'),
-            transparent: matData.transparent ?? false,
-            opacity: matData.opacity ?? 1,
-          });
-        }
-      } else {
-        material = new THREE.SpriteMaterial();
-      }
-      obj = new THREE.Sprite(material);
+      const material = spec.material ? world.ensure(spec.material) : null;
+      obj = new THREE.Sprite(material ?? new THREE.SpriteMaterial());
       break;
     }
 
-    case "Group": {
+    case "Group":
       obj = new THREE.Group();
-      if (data.children) {
-        for (const childData of data.children) {
-          const child = createObject(childData, buffers);
-          if (child) {
-            obj.add(child);
-          }
-        }
-      }
       break;
-    }
 
     case "AmbientLight":
+      obj = new THREE.AmbientLight(colorOf(spec.color), spec.intensity ?? 1);
+      break;
+
     case "DirectionalLight":
+      obj = new THREE.DirectionalLight(colorOf(spec.color), spec.intensity ?? 1);
+      obj.castShadow = spec.castShadow ?? false;
+      if (spec.target) obj.target.position.set(...spec.target);
+      break;
+
     case "PointLight":
+      obj = new THREE.PointLight(
+        colorOf(spec.color),
+        spec.intensity ?? 1,
+        spec.distance ?? 0,
+        spec.decay ?? 2
+      );
+      obj.castShadow = spec.castShadow ?? false;
+      break;
+
     case "HemisphereLight":
+      obj = new THREE.HemisphereLight(
+        colorOf(spec.skyColor),
+        colorOf(spec.groundColor, "#444444"),
+        spec.intensity ?? 1
+      );
+      break;
+
     case "SpotLight":
-      return createLight(data);
+      obj = new THREE.SpotLight(
+        colorOf(spec.color),
+        spec.intensity ?? 1,
+        spec.distance ?? 0,
+        spec.angle ?? Math.PI / 6,
+        spec.penumbra ?? 0,
+        spec.decay ?? 2
+      );
+      obj.castShadow = spec.castShadow ?? false;
+      if (spec.target) obj.target.position.set(...spec.target);
+      break;
 
     case "GridHelper":
+      obj = new THREE.GridHelper(
+        spec.size ?? 10,
+        spec.divisions ?? 10,
+        colorOf(spec.colorCenterLine, "#444444"),
+        colorOf(spec.colorGrid, "#888888")
+      );
+      break;
+
     case "AxesHelper":
-      return createHelper(data);
+      obj = new THREE.AxesHelper(spec.size ?? 1);
+      break;
 
     case "PerspectiveCamera":
     case "OrthographicCamera":
-      // Cameras are usually handled separately, but if present as children
-      // build via createCamera to avoid warnings.
-      return createCamera(data, 1);
+      obj = buildCamera(spec);
+      break;
 
     default:
-      console.warn(`Unknown object type: ${data.type}`);
+      console.warn(`anythreejs: unknown object type: ${spec.type}`);
       return null;
   }
 
-  applyTransform(obj, data);
-  obj.name = data.name || "";
-  obj.visible = data.visible !== false;
-  obj.userData.uuid = data.uuid;
+  applyTransform(obj, spec);
+  if (spec.lookAt && obj.isCamera) obj.lookAt(new THREE.Vector3(...spec.lookAt));
+  obj.name = spec.name || "";
+  obj.visible = spec.visible !== false;
+  obj.userData.uuid = spec.uuid;
 
-  // Process children for non-Group objects too
-  if (data.children && data.type !== "Group") {
-    for (const childData of data.children) {
-      const child = createObject(childData, buffers);
-      if (child) {
-        obj.add(child);
-      }
-    }
+  for (const childUuid of spec.children ?? []) {
+    const child = world.ensure(childUuid);
+    if (child) obj.add(child);
   }
 
   return obj;
 }
 
-/**
- * Create a camera from serialized data
- */
-function createCamera(data, aspect) {
-  if (!data) {
-    return new THREE.PerspectiveCamera(50, aspect, 0.1, 2000);
+// ---------------------------------------------------------------------------
+// World: shared registry + reconciler (one per widget model)
+// ---------------------------------------------------------------------------
+
+class World {
+  constructor(model) {
+    this.model = model;
+    this.specs = new Map(); // uuid -> spec (buffers resolved)
+    this.objects = new Map(); // uuid -> three.js object
+    this.controlSpecs = []; // OrbitControls / TrackballControls specs
+    this.pickers = []; // Picker descriptors
+    this.views = new Set();
+    this.scene = null;
+    this.camera = null;
+    this.sceneUuid = null;
+    this.cameraUuid = null;
+    this.controlsTarget = new THREE.Vector3();
+    this.hasControlsTarget = false;
+    this.lastEpoch = 0;
+
+    this._onCustomMsg = (msg, buffers) => {
+      if (msg && msg.kind === "ops") this.applyOps(msg, buffers ?? []);
+    };
+    this._onSnapshot = () => this.applySnapshot(true);
+    model.on("msg:custom", this._onCustomMsg);
+    model.on("change:_scene_state", this._onSnapshot);
+
+    this.applySnapshot(false);
   }
 
-  let camera;
+  // -- construction -------------------------------------------------------
 
-  switch (data.type) {
-    case "PerspectiveCamera":
-      camera = new THREE.PerspectiveCamera(
-        data.fov ?? 50,
-        data.aspect ?? aspect,
-        data.near ?? 0.1,
-        data.far ?? 2000
-      );
-      break;
-
-    case "OrthographicCamera": {
-      // Use the exact values provided from Python
-      camera = new THREE.OrthographicCamera(
-        data.left ?? -1,
-        data.right ?? 1,
-        data.top ?? 1,
-        data.bottom ?? -1,
-        data.near ?? 0.1,
-        data.far ?? 2000
-      );
-      camera.zoom = data.zoom ?? 1;
-      camera.updateProjectionMatrix();
-      break;
+  ensure(uuid) {
+    if (!uuid) return null;
+    if (this.objects.has(uuid)) return this.objects.get(uuid);
+    const spec = this.specs.get(uuid);
+    if (!spec) {
+      console.warn("anythreejs: reference to unknown object", uuid);
+      return null;
     }
-
-    default:
-      console.warn(`Unknown camera type: ${data.type}`);
-      camera = new THREE.PerspectiveCamera(50, aspect, 0.1, 2000);
-  }
-
-  applyTransform(camera, data);
-
-  if (data.lookAt) {
-    camera.lookAt(new THREE.Vector3(...data.lookAt));
-  }
-
-  return camera;
-}
-
-/**
- * Build scene from serialized data
- */
-function buildScene(sceneData, buffers = {}) {
-  const scene = new THREE.Scene();
-
-  if (sceneData.background) {
-    scene.background = new THREE.Color(sceneData.background);
-  }
-
-  if (sceneData.children) {
-    for (const childData of sceneData.children) {
-      const child = createObject(childData, buffers);
-      if (child) {
-        scene.add(child);
-      }
-    }
-  }
-
-  return scene;
-}
-
-/**
- * Main render function called by anywidget
- */
-function render({ model, el }) {
-  // Get the model ID for shared object lookup
-  const modelId = model.model_id;
-  const shared = getSharedObjects(modelId);
-  shared.viewCount++;
-  debug("New view for model:", modelId, "viewCount:", shared.viewCount);
-
-  // Create container
-  const container = document.createElement("div");
-  container.style.width = "100%";
-  container.style.height = "100%";
-  container.style.position = "relative";
-  el.appendChild(container);
-
-  // Get initial dimensions
-  let width = model.get("width");
-  let height = model.get("height");
-
-  // Create renderer (each view needs its own WebGL renderer)
-  const renderer = new THREE.WebGLRenderer({
-    antialias: model.get("antialias"),
-    alpha: model.get("alpha"),
-  });
-  renderer.setSize(width, height);
-  renderer.setPixelRatio(window.devicePixelRatio);
-  renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-
-  // Color space settings for proper color rendering
-  // Use SRGBColorSpace for correct gamma correction
-  // This ensures matplotlib colors (which are in sRGB) display correctly
-  renderer.outputColorSpace = THREE.SRGBColorSpace;
-
-  container.appendChild(renderer.domElement);
-
-  // Local state for this view
-  let controls = null;  // Each view has its own controls instance
-  let animationId = null;
-  let buffers = {}; // Binary buffers from Python
-
-  // Reference to shared objects (will be populated by rebuild)
-  let scene = shared.scene;
-  let camera = shared.camera;
-  let pickers = shared.pickers;
-
-  /**
-   * Extract binary buffers from widget state
-   * In anywidget, buffers can be accessed through widget_manager
-   */
-  function updateBuffers() {
+    if (CONTROL_TYPES.has(spec.type)) return null; // no three.js counterpart
+    let obj = null;
     try {
-      // anywidget provides buffers through the widget manager's state
-      if (model.widget_manager && model.widget_manager.get_state) {
-        const state = model.widget_manager.get_state(model);
-        if (state && state.buffers) {
-          buffers = {};
-          for (const [key, value] of Object.entries(state.buffers)) {
-            // Extract the DataView from buffer data
-            if (value && value.data) {
-              buffers[key] = value.data.buffer;
-            } else {
-              buffers[key] = value;
-            }
-          }
-          debug("Updated buffers:", Object.keys(buffers));
-          return;
-        }
-      }
+      if (GEOMETRY_TYPES.has(spec.type)) obj = buildGeometry(spec, this);
+      else if (MATERIAL_TYPES.has(spec.type)) obj = buildMaterial(spec, this);
+      else if (TEXTURE_TYPES.has(spec.type)) obj = buildTexture(spec);
+      else obj = buildSceneNode(spec, this);
+    } catch (error) {
+      console.error("anythreejs: failed to build", spec.type, uuid, error);
+    }
+    if (obj) this.objects.set(uuid, obj);
+    return obj;
+  }
 
-      // Fallback: buffers might be directly in model attributes
-      // This is a simplified approach that may need adjustment
-      debug("No buffers found in widget state");
-      buffers = {};
-    } catch (e) {
-      debug("Error updating buffers:", e);
-      buffers = {};
+  registerControl(spec) {
+    if (spec.type === "Picker") {
+      this.pickers.push({
+        uuid: spec.uuid,
+        event: spec.event || "click",
+        controlling: spec.controlling ?? null,
+        all: spec.all ?? false,
+      });
+    } else {
+      this.controlSpecs.push(spec);
     }
   }
 
-  // Update buffers initially
-  updateBuffers();
+  applySnapshot(preservePose) {
+    const state = this.model.get("_scene_state") ?? {};
 
-  // Raycaster for picking
-  const raycaster = new THREE.Raycaster();
-  const mouse = new THREE.Vector2();
+    let pose = null;
+    if (preservePose && this.camera) {
+      pose = {
+        position: this.camera.position.clone(),
+        rotation: this.camera.rotation.clone(),
+        zoom: this.camera.zoom,
+        target: this.controlsTarget.clone(),
+        hasTarget: this.hasControlsTarget,
+      };
+    }
 
-  /**
-   * Update resolution for all LineMaterial instances in the scene
-   */
-  function updateLineMaterialResolutions() {
+    this.disposeAll();
+
+    for (const [uuid, spec] of Object.entries(state.objects ?? {})) {
+      this.specs.set(uuid, resolveBuffers(spec, []));
+    }
+    this.sceneUuid = state.scene ?? null;
+    this.cameraUuid = state.camera ?? null;
+    this.lastEpoch = state.epoch ?? 0;
+
+    for (const uuid of state.controls ?? []) {
+      const spec = this.specs.get(uuid);
+      if (spec) this.registerControl(spec);
+    }
+
+    this.scene = this.sceneUuid ? this.ensure(this.sceneUuid) : null;
+    if (!this.scene) {
+      this.scene = new THREE.Scene();
+      this.scene.background = new THREE.Color("#000000");
+    }
+    this.camera = this.cameraUuid ? this.ensure(this.cameraUuid) : null;
+    if (!this.camera) {
+      this.camera = new THREE.PerspectiveCamera(50, 1, 0.1, 2000);
+      this.camera.position.set(0, 0, 5);
+    }
+    // pythreejs adds the camera to the scene (lights parented to the camera
+    // etc. keep working).
+    if (this.camera.parent === null) this.scene.add(this.camera);
+
+    if (pose) {
+      this.camera.position.copy(pose.position);
+      this.camera.rotation.copy(pose.rotation);
+      this.camera.zoom = pose.zoom;
+      this.camera.updateProjectionMatrix?.();
+      this.controlsTarget.copy(pose.target);
+      this.hasControlsTarget = pose.hasTarget;
+    }
+
+    this.refreshLineResolutions();
+    for (const view of this.views) view.onWorldRebuilt();
+    debug("snapshot applied:", this.specs.size, "objects");
+  }
+
+  // -- delta ops ----------------------------------------------------------
+
+  applyOps(msg, buffers) {
+    this.lastEpoch = msg.epoch ?? this.lastEpoch;
+    for (const op of msg.ops ?? []) {
+      try {
+        this.applyOp(op, buffers);
+      } catch (error) {
+        console.error("anythreejs: op failed", op, error);
+      }
+    }
+  }
+
+  applyOp(op, buffers) {
+    switch (op.op) {
+      case "create": {
+        const spec = resolveBuffers(op.spec, buffers);
+        this.specs.set(op.uuid, spec);
+        if (CONTROL_TYPES.has(spec.type)) {
+          this.registerControl(spec);
+          for (const view of this.views) view.onWorldRebuilt();
+        } else {
+          this.ensure(op.uuid);
+        }
+        break;
+      }
+
+      case "update": {
+        const props = resolveBuffers(op.props ?? {}, buffers);
+        this.updateObject(op.uuid, props);
+        break;
+      }
+
+      case "buffer": {
+        const value = resolveBuffers(op.value ?? {}, buffers);
+        this.applyBufferOp(op.uuid, op.attribute, value);
+        break;
+      }
+
+      case "child_add": {
+        const parent = this.ensure(op.uuid);
+        const child = this.ensure(op.child);
+        if (parent && child) parent.add(child);
+        break;
+      }
+
+      case "child_remove": {
+        const parent = this.objects.get(op.uuid);
+        const child = this.objects.get(op.child);
+        if (parent && child) parent.remove(child);
+        break;
+      }
+
+      case "remove":
+        this.removeObject(op.uuid);
+        break;
+
+      default:
+        console.warn("anythreejs: unknown op", op.op);
+    }
+  }
+
+  updateObject(uuid, props) {
+    const spec = this.specs.get(uuid);
+    if (!spec) return;
+    Object.assign(spec, props);
+
+    if (CONTROL_TYPES.has(spec.type)) {
+      this.updateControls(uuid, props);
+      return;
+    }
+
+    const obj = this.objects.get(uuid);
+    if (!obj) return; // not built yet; merged spec is used at build time
+
+    if (GEOMETRY_TYPES.has(spec.type) || TEXTURE_TYPES.has(spec.type)) {
+      this.rebuildResource(uuid);
+      return;
+    }
+    if (MATERIAL_TYPES.has(spec.type)) {
+      this.applyMaterialProps(obj, spec, props);
+      return;
+    }
+    if (HELPER_TYPES.has(spec.type)) {
+      this.rebuildSceneNode(uuid);
+      return;
+    }
+    this.applyNodeProps(obj, spec, props);
+  }
+
+  applyMaterialProps(mat, spec, props) {
+    for (const [key, value] of Object.entries(props)) {
+      switch (key) {
+        case "color":
+          if (mat.color) mat.color.copy(colorOf(value));
+          break;
+        case "emissive":
+          if (mat.emissive) mat.emissive.copy(colorOf(value, "#000000"));
+          break;
+        case "specular":
+          if (mat.specular) mat.specular.copy(colorOf(value, "#111111"));
+          break;
+        case "side":
+          mat.side = SIDE_MAP[value] ?? mat.side;
+          break;
+        case "vertexColors":
+          mat.vertexColors = parseVertexColors(value);
+          break;
+        case "map":
+          mat.map = value ? this.ensure(value) : null;
+          break;
+        case "resolution":
+          if (mat.resolution && Array.isArray(value)) {
+            mat.resolution.set(value[0], value[1]);
+          }
+          break;
+        default:
+          if (key in mat) mat[key] = value;
+      }
+    }
+    mat.needsUpdate = true;
+  }
+
+  applyNodeProps(obj, spec, props) {
+    for (const [key, value] of Object.entries(props)) {
+      switch (key) {
+        case "position":
+          obj.position.set(...value);
+          break;
+        case "rotation":
+          obj.rotation.set(
+            value[0],
+            value[1],
+            value[2],
+            spec.rotationOrder ?? obj.rotation.order
+          );
+          break;
+        case "rotationOrder":
+          obj.rotation.order = value;
+          break;
+        case "scale":
+          obj.scale.set(...value);
+          break;
+        case "visible":
+          obj.visible = value;
+          break;
+        case "name":
+          obj.name = value;
+          break;
+        case "background":
+          if (obj.isScene) obj.background = value ? colorOf(value) : null;
+          break;
+        case "geometry": {
+          const geometry = value ? this.ensure(value) : null;
+          if (geometry) {
+            obj.geometry = geometry;
+            if (obj.isLine2) obj.computeLineDistances();
+          }
+          break;
+        }
+        case "material": {
+          const material = value ? this.ensure(value) : null;
+          if (material) obj.material = material;
+          break;
+        }
+        case "color":
+          if (obj.color) obj.color.copy(colorOf(value));
+          break;
+        case "skyColor":
+          if (obj.isHemisphereLight) obj.color.copy(colorOf(value));
+          break;
+        case "groundColor":
+          if (obj.isHemisphereLight) obj.groundColor.copy(colorOf(value, "#444444"));
+          break;
+        case "target":
+          if (obj.target?.position && Array.isArray(value)) {
+            obj.target.position.set(...value);
+          }
+          break;
+        case "lookAt":
+          if (obj.isCamera && Array.isArray(value)) {
+            obj.lookAt(new THREE.Vector3(...value));
+          }
+          break;
+        case "fov":
+        case "aspect":
+        case "near":
+        case "far":
+        case "zoom":
+        case "left":
+        case "right":
+        case "top":
+        case "bottom":
+          obj[key] = value;
+          obj.updateProjectionMatrix?.();
+          break;
+        default:
+          if (key in obj) obj[key] = value;
+      }
+    }
+  }
+
+  applyBufferOp(uuid, attribute, value) {
+    const geometry = this.objects.get(uuid);
+    const spec = this.specs.get(uuid);
+    if (!geometry || !geometry.isBufferGeometry || !spec) return;
+    const array = attributeArray(value);
+    if (!array) return;
+
+    if (attribute === "__index__") {
+      spec.index = value;
+      geometry.setIndex(new THREE.BufferAttribute(array, 1));
+      return;
+    }
+
+    if (spec.attributes) spec.attributes[attribute] = value;
+    const existing = geometry.getAttribute(attribute);
+    if (
+      existing &&
+      existing.array.length === array.length &&
+      existing.array.constructor === array.constructor
+    ) {
+      existing.array.set(array);
+      existing.needsUpdate = true;
+    } else {
+      geometry.setAttribute(
+        attribute,
+        new THREE.BufferAttribute(
+          array,
+          value.itemSize ?? existing?.itemSize ?? 3,
+          value.normalized ?? false
+        )
+      );
+    }
+    if (attribute === "position") {
+      geometry.computeBoundingBox();
+      geometry.computeBoundingSphere();
+      if (!spec.attributes?.normal) geometry.computeVertexNormals();
+    }
+  }
+
+  /** Rebuild a geometry/material/texture in place: build a fresh object
+   * from the (already merged) spec and swap it on everything that
+   * references the old one, then dispose the old one. */
+  rebuildResource(uuid) {
+    const old = this.objects.get(uuid);
+    this.objects.delete(uuid);
+    const fresh = this.ensure(uuid);
+    if (!old || !fresh) return;
+    for (const [, node] of this.objects) {
+      if (node.isObject3D) {
+        if (node.geometry === old) {
+          node.geometry = fresh;
+          if (node.isLine2) node.computeLineDistances();
+        }
+        if (node.material === old) node.material = fresh;
+        if (node.material && node.material.map === old) {
+          node.material.map = fresh;
+          node.material.needsUpdate = true;
+        }
+      } else if (node.isMaterial && node.map === old) {
+        node.map = fresh;
+        node.needsUpdate = true;
+      }
+    }
+    old.dispose?.();
+    this.refreshLineResolutions();
+  }
+
+  /** Rebuild a scene-graph node whose constructor params changed
+   * (helpers: AxesHelper size, GridHelper divisions...). */
+  rebuildSceneNode(uuid) {
+    const old = this.objects.get(uuid);
+    const parent = old?.parent ?? null;
+    this.objects.delete(uuid);
+    const fresh = this.ensure(uuid);
+    if (old && fresh && parent) {
+      parent.add(fresh);
+      parent.remove(old);
+    }
+    old?.dispose?.();
+  }
+
+  updateControls(uuid, props) {
+    const picker = this.pickers.find((p) => p.uuid === uuid);
+    if (picker) {
+      if ("event" in props) picker.event = props.event;
+      if ("controlling" in props) picker.controlling = props.controlling;
+      if ("all" in props) picker.all = props.all;
+      return;
+    }
+    if ("target" in props && Array.isArray(props.target)) {
+      this.controlsTarget.set(...props.target);
+      this.hasControlsTarget = true;
+    }
+    for (const view of this.views) view.applyControlsProps(uuid, props);
+  }
+
+  removeObject(uuid) {
+    const obj = this.objects.get(uuid);
+    this.objects.delete(uuid);
+    this.specs.delete(uuid);
+    this.controlSpecs = this.controlSpecs.filter((s) => s.uuid !== uuid);
+    this.pickers = this.pickers.filter((p) => p.uuid !== uuid);
+    if (obj) {
+      if (obj.isObject3D) obj.removeFromParent();
+      obj.dispose?.();
+    }
+  }
+
+  refreshLineResolutions() {
+    for (const view of this.views) view.applyLineResolution();
+  }
+
+  disposeAll() {
+    for (const [, obj] of this.objects) {
+      obj.dispose?.();
+    }
+    this.objects.clear();
+    this.specs.clear();
+    this.controlSpecs = [];
+    this.pickers = [];
+    this.scene = null;
+    this.camera = null;
+  }
+
+  dispose() {
+    this.model.off("msg:custom", this._onCustomMsg);
+    this.model.off("change:_scene_state", this._onSnapshot);
+    this.disposeAll();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// View: one per display of the widget
+// ---------------------------------------------------------------------------
+
+class View {
+  constructor(world, model, el) {
+    this.world = world;
+    this.model = model;
+
+    this.container = document.createElement("div");
+    this.container.classList.add("anythreejs-container");
+    this.container.style.width = "100%";
+    this.container.style.height = "100%";
+    this.container.style.position = "relative";
+    el.appendChild(this.container);
+
+    this.width = model.get("width");
+    this.height = model.get("height");
+
+    this.renderer = new THREE.WebGLRenderer({
+      antialias: model.get("antialias"),
+      alpha: model.get("alpha"),
+    });
+    this.renderer.setSize(this.width, this.height);
+    this.renderer.setPixelRatio(window.devicePixelRatio);
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    // sRGB output so matplotlib-style colors display correctly.
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.container.appendChild(this.renderer.domElement);
+
+    this.controls = null;
+    this.controlsUuid = null;
+    this.raycaster = new THREE.Raycaster();
+    this.mouse = new THREE.Vector2();
+    this.hoverTimeout = null;
+    this.pickerMoveTimeout = null;
+    this.cameraSyncTimeout = null;
+
+    this._onResize = () => this.resize();
+    model.on("change:width", this._onResize);
+    model.on("change:height", this._onResize);
+
+    this._onClick = (e) => this.onClick(e);
+    this._onDblClick = (e) => this.onDblClick(e);
+    this._onMouseDown = (e) => this.handlePickerEvent(e, "mousedown");
+    this._onMouseUp = (e) => this.handlePickerEvent(e, "mouseup");
+    this._onMouseMove = (e) => this.onMouseMove(e);
+    const dom = this.renderer.domElement;
+    dom.addEventListener("click", this._onClick);
+    dom.addEventListener("dblclick", this._onDblClick);
+    dom.addEventListener("mousedown", this._onMouseDown);
+    dom.addEventListener("mouseup", this._onMouseUp);
+    dom.addEventListener("mousemove", this._onMouseMove);
+
+    this.buildControls();
+    this.applyLineResolution();
+
+    this._animate = () => this.animate();
+    this.animationId = requestAnimationFrame(this._animate);
+
+    world.views.add(this);
+  }
+
+  onWorldRebuilt() {
+    this.buildControls();
+  }
+
+  // -- controls -----------------------------------------------------------
+
+  buildControls() {
+    if (this.controls) {
+      this.controls.dispose();
+      this.controls = null;
+      this.controlsUuid = null;
+    }
+    const camera = this.world.camera;
+    const spec = this.world.controlSpecs[0];
+    if (!camera || !spec) return;
+
+    if (spec.type === "OrbitControls") {
+      const controls = new OrbitControls(camera, this.renderer.domElement);
+      controls.enableDamping = spec.enableDamping ?? true;
+      controls.dampingFactor = spec.dampingFactor ?? 0.05;
+      controls.enableZoom = spec.enableZoom ?? true;
+      // 2D orthographic views default to pan/zoom without rotation.
+      controls.enableRotate = camera.isOrthographicCamera
+        ? spec.enableRotate ?? false
+        : spec.enableRotate ?? true;
+      controls.enablePan = spec.enablePan ?? true;
+      controls.autoRotate = spec.autoRotate ?? false;
+      controls.autoRotateSpeed = spec.autoRotateSpeed ?? 2.0;
+      controls.screenSpacePanning = spec.screenSpacePanning ?? true;
+      this.controls = controls;
+    } else if (spec.type === "TrackballControls") {
+      this.controls = new TrackballControls(camera, this.renderer.domElement);
+    }
+    if (!this.controls) return;
+    this.controlsUuid = spec.uuid;
+
+    if (this.world.hasControlsTarget) {
+      this.controls.target.copy(this.world.controlsTarget);
+    } else {
+      if (Array.isArray(spec.target)) this.controls.target.set(...spec.target);
+      this.world.controlsTarget.copy(this.controls.target);
+      this.world.hasControlsTarget = true;
+    }
+
+    this.controls.addEventListener("change", () => {
+      this.world.controlsTarget.copy(this.controls.target);
+      this.scheduleCameraSync();
+    });
+    this.controls.addEventListener("end", () => this.syncCameraNow());
+  }
+
+  applyControlsProps(uuid, props) {
+    if (!this.controls || uuid !== this.controlsUuid) return;
+    if ("target" in props && Array.isArray(props.target)) {
+      this.controls.target.set(...props.target);
+    }
+    for (const key of [
+      "enableDamping",
+      "dampingFactor",
+      "enableZoom",
+      "enableRotate",
+      "enablePan",
+      "autoRotate",
+      "autoRotateSpeed",
+      "screenSpacePanning",
+    ]) {
+      if (key in props) this.controls[key] = props[key];
+    }
+  }
+
+  // -- camera pose sync-back ---------------------------------------------
+
+  scheduleCameraSync() {
+    if (this.cameraSyncTimeout) return;
+    this.cameraSyncTimeout = setTimeout(() => {
+      this.cameraSyncTimeout = null;
+      this.syncCameraNow();
+    }, CAMERA_SYNC_THROTTLE_MS);
+  }
+
+  syncCameraNow() {
+    const camera = this.world.camera;
+    if (!camera) return;
+    const state = {
+      position: camera.position.toArray(),
+      rotation: [camera.rotation.x, camera.rotation.y, camera.rotation.z],
+      zoom: camera.zoom,
+      epoch: this.world.lastEpoch,
+    };
+    if (this.controls?.target) state.target = this.controls.target.toArray();
+    this.model.set("_camera_state", state);
+    this.model.save_changes();
+  }
+
+  // -- frame loop / sizing ------------------------------------------------
+
+  animate() {
+    this.animationId = requestAnimationFrame(this._animate);
+    const { scene, camera } = this.world;
+    if (this.controls) {
+      // Follow target changes made through other views.
+      if (
+        this.world.hasControlsTarget &&
+        !this.controls.target.equals(this.world.controlsTarget)
+      ) {
+        this.controls.target.copy(this.world.controlsTarget);
+      }
+      this.controls.update();
+    }
+    if (scene && camera) this.renderer.render(scene, camera);
+  }
+
+  resize() {
+    this.width = this.model.get("width");
+    this.height = this.model.get("height");
+    this.renderer.setSize(this.width, this.height);
+    const camera = this.world.camera;
+    if (camera && camera.isPerspectiveCamera) {
+      camera.aspect = this.width / this.height;
+      camera.updateProjectionMatrix();
+    }
+    // OrthographicCamera bounds are managed by the Python side.
+    this.applyLineResolution();
+  }
+
+  applyLineResolution() {
+    const scene = this.world.scene;
     if (!scene) return;
     scene.traverse((obj) => {
       if (obj.material && obj.material.isLineMaterial) {
-        obj.material.resolution.set(width, height);
+        obj.material.resolution.set(this.width, this.height);
       }
     });
   }
 
-  /**
-   * Update only the scene, preserving camera position and controls
-   */
-  function updateScene() {
-    const sceneData = model.get("_scene_data");
+  // -- picking ------------------------------------------------------------
 
-    // Save current camera state from shared camera
-    let savedCameraPosition = null;
-    let savedCameraRotation = null;
-    let savedControlsTarget = null;
-
-    if (shared.camera) {
-      savedCameraPosition = shared.camera.position.clone();
-      savedCameraRotation = shared.camera.rotation.clone();
-    }
-    if (controls && controls.target) {
-      savedControlsTarget = controls.target.clone();
-    }
-
-    // Rebuild scene (shared across all views)
-    if (sceneData && Object.keys(sceneData).length > 0) {
-      shared.scene = buildScene(sceneData, buffers);
-    } else {
-      shared.scene = new THREE.Scene();
-      shared.scene.background = new THREE.Color("#000000");
-    }
-    scene = shared.scene;
-
-    // Add camera back to scene
-    if (shared.camera) {
-      scene.add(shared.camera);
-
-      // Restore camera state
-      if (savedCameraPosition) {
-        shared.camera.position.copy(savedCameraPosition);
-      }
-      if (savedCameraRotation) {
-        shared.camera.rotation.copy(savedCameraRotation);
-      }
-    }
-
-    // Restore controls target
-    if (controls && savedControlsTarget) {
-      controls.target.copy(savedControlsTarget);
-    }
-
-    // Update LineMaterial resolutions
-    updateLineMaterialResolutions();
+  getMousePosition(event) {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
   }
 
-  /**
-   * Build/rebuild shared scene and camera from model data.
-   * Scene and camera are shared across all views of the same widget.
-   * Each view creates its own controls instance that controls the shared camera.
-   */
-  function rebuild() {
-    const sceneData = model.get("_scene_data");
-    const cameraData = model.get("_camera_data");
-    const controlsData = model.get("_controls_data");
-
-    const aspect = width / height;
-
-    // Check if we need to build shared objects (first view or data changed)
-    const isFirstView = shared.scene === null;
-
-    if (isFirstView || shared.needsRebuild) {
-      debug("Building shared scene and camera (first view or rebuild needed)");
-
-      // Build scene (shared)
-      if (sceneData && Object.keys(sceneData).length > 0) {
-        shared.scene = buildScene(sceneData, buffers);
-      } else {
-        shared.scene = new THREE.Scene();
-        shared.scene.background = new THREE.Color("#000000");
-      }
-
-      // Build camera (shared)
-      shared.camera = createCamera(cameraData, aspect);
-
-      // Add camera to scene (pythreejs does this)
-      shared.scene.add(shared.camera);
-
-      // Store pickers (shared)
-      shared.pickers = [];
-      if (controlsData && controlsData.length > 0) {
-        for (const ctrlData of controlsData) {
-          if (ctrlData.type === "Picker") {
-            shared.pickers.push({
-              uuid: ctrlData.uuid,
-              event: ctrlData.event || "click",
-              controlling: ctrlData.controlling,
-              all: ctrlData.all ?? false,
-            });
-            debug("Registered picker:", ctrlData.uuid, "event:", ctrlData.event, "controlling:", ctrlData.controlling);
-          }
-        }
-      }
-
-      shared.needsRebuild = false;
-    } else {
-      debug("Reusing existing shared scene and camera");
-    }
-
-    // Update local references to shared objects
-    scene = shared.scene;
-    camera = shared.camera;
-    pickers = shared.pickers;
-
-    // Dispose of old controls for this view
-    if (controls) {
-      controls.dispose();
-      controls = null;
-    }
-
-    // Create controls for THIS view (each view needs its own controls instance
-    // because controls attach to a specific DOM element, but they all control
-    // the SAME shared camera - this is how pythreejs achieves instant sync)
-    if (controlsData && controlsData.length > 0) {
-      for (const ctrlData of controlsData) {
-        if (ctrlData.type === "OrbitControls") {
-          // Create OrbitControls attached to this view's renderer, but controlling shared camera
-          controls = new OrbitControls(camera, renderer.domElement);
-          controls.enableDamping = ctrlData.enableDamping ?? true;
-          controls.dampingFactor = ctrlData.dampingFactor ?? 0.05;
-          controls.enableZoom = ctrlData.enableZoom ?? true;
-          controls.enableRotate = ctrlData.enableRotate ?? true;
-          controls.enablePan = ctrlData.enablePan ?? true;
-          controls.autoRotate = ctrlData.autoRotate ?? false;
-          controls.autoRotateSpeed = ctrlData.autoRotateSpeed ?? 2.0;
-
-          // Enable screen space panning (important for 2D orthographic views)
-          controls.screenSpacePanning = ctrlData.screenSpacePanning ?? true;
-
-          // Default mouse buttons: LEFT=rotate, MIDDLE=dolly, RIGHT=pan
-          // For orthographic 2D, disable rotation by default but keep pan on right-click
-          if (camera.isOrthographicCamera) {
-            controls.enableRotate = ctrlData.enableRotate ?? false;
-          }
-
-          debug("OrbitControls created for view, controlling shared camera");
-
-          // Use shared target if it exists (from another view), otherwise initialize from data
-          if (shared.controlsTarget) {
-            controls.target.copy(shared.controlsTarget);
-          } else if (ctrlData.target) {
-            controls.target.set(...ctrlData.target);
-            // Store as shared target
-            shared.controlsTarget = controls.target.clone();
-          } else {
-            shared.controlsTarget = controls.target.clone();
-          }
-
-          // Sync target to shared state when user interacts
-          controls.addEventListener("change", () => {
-            if (shared.controlsTarget) {
-              shared.controlsTarget.copy(controls.target);
-            }
-          });
-
-        } else if (ctrlData.type === "TrackballControls") {
-          controls = new TrackballControls(camera, renderer.domElement);
-
-          // Use shared target if it exists
-          if (shared.controlsTarget) {
-            controls.target.copy(shared.controlsTarget);
-          } else if (ctrlData.target) {
-            controls.target.set(...ctrlData.target);
-            shared.controlsTarget = controls.target.clone();
-          } else {
-            shared.controlsTarget = controls.target.clone();
-          }
-
-          // Sync target to shared state when user interacts
-          controls.addEventListener("change", () => {
-            if (shared.controlsTarget) {
-              shared.controlsTarget.copy(controls.target);
-            }
-          });
-        }
-      }
-    }
-
-    // Debug: log all scene objects with their uuids
-    if (scene && DEBUG) {
-      debug("Scene objects:");
-      scene.traverse((obj) => {
-        if (obj.userData.uuid) {
-          debug("  -", obj.type, "uuid:", obj.userData.uuid);
-        }
-      });
-    }
-
-    // Update LineMaterial resolutions after rebuild
-    updateLineMaterialResolutions();
-  }
-
-  /**
-   * Animation loop
-   */
-  function animate() {
-    animationId = requestAnimationFrame(animate);
-
-    if (controls) {
-      // Sync target from shared state (in case another view changed it)
-      if (shared.controlsTarget && controls.target) {
-        // Only update if different to avoid resetting during interaction
-        if (!controls.target.equals(shared.controlsTarget)) {
-          controls.target.copy(shared.controlsTarget);
-        }
-      }
-      controls.update();
-    }
-
-    if (scene && camera) {
-      renderer.render(scene, camera);
-    }
-  }
-
-  /**
-   * Handle resize
-   */
-  function onResize() {
-    width = model.get("width");
-    height = model.get("height");
-
-    renderer.setSize(width, height);
-
-    if (camera) {
-      if (camera.isPerspectiveCamera) {
-        camera.aspect = width / height;
-        camera.updateProjectionMatrix();
-      }
-      // Note: OrthographicCamera bounds are managed by the Python side
-      // (e.g., matplotgl sets left/right/top/bottom directly)
-      // so we don't auto-adjust them on resize
-    }
-
-    // Update LineMaterial resolutions
-    updateLineMaterialResolutions();
-  }
-
-  /**
-   * Get mouse position in normalized device coordinates
-   */
-  function getMousePosition(event) {
-    const rect = renderer.domElement.getBoundingClientRect();
-    mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-    mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-  }
-
-  /**
-   * Perform raycasting and return hit info
-   */
-  function performRaycast(event) {
-    if (!scene || !camera) return null;
-
-    getMousePosition(event);
-    raycaster.setFromCamera(mouse, camera);
-
-    // Get all meshes/points that can be picked
-    const pickableObjects = [];
-    scene.traverse((obj) => {
-      if (obj.isMesh || obj.isPoints || obj.isLine || obj.isLineSegments || obj.isSprite) {
-        pickableObjects.push(obj);
+  pickableObjects() {
+    const objects = [];
+    this.world.scene?.traverse((obj) => {
+      if (obj.isMesh || obj.isPoints || obj.isLine || obj.isSprite) {
+        objects.push(obj);
       }
     });
-
-    const intersects = raycaster.intersectObjects(pickableObjects, false);
-
-    if (intersects.length > 0) {
-      const hit = intersects[0];
-      return {
-        name: hit.object.name || "",
-        uuid: hit.object.userData.uuid || hit.object.uuid,
-        type: hit.object.type,
-        point: hit.point ? [hit.point.x, hit.point.y, hit.point.z] : null,
-        distance: hit.distance,
-        faceIndex: hit.faceIndex ?? null,
-        index: hit.index ?? null,  // For points
-        instanceId: hit.instanceId ?? null,
-      };
-    }
-    return null;
+    return objects;
   }
 
-  /**
-   * Perform raycasting for a specific picker (against its controlling object)
-   */
-  function performPickerRaycast(event, picker) {
+  performRaycast(event) {
+    const { scene, camera } = this.world;
     if (!scene || !camera) return null;
+    this.getMousePosition(event);
+    this.raycaster.setFromCamera(this.mouse, camera);
+    const intersects = this.raycaster.intersectObjects(this.pickableObjects(), false);
+    if (intersects.length === 0) return null;
+    const hit = intersects[0];
+    return {
+      name: hit.object.name || "",
+      uuid: hit.object.userData.uuid || hit.object.uuid,
+      type: hit.object.type,
+      point: hit.point ? [hit.point.x, hit.point.y, hit.point.z] : null,
+      distance: hit.distance,
+      faceIndex: hit.faceIndex ?? null,
+      index: hit.index ?? null, // for points
+      instanceId: hit.instanceId ?? null,
+    };
+  }
 
-    getMousePosition(event);
-    raycaster.setFromCamera(mouse, camera);
+  performPickerRaycast(event, picker) {
+    const { scene, camera } = this.world;
+    if (!scene || !camera) return null;
+    this.getMousePosition(event);
+    this.raycaster.setFromCamera(this.mouse, camera);
 
-    // Find objects to pick against
-    let pickableObjects = [];
-
+    let pickable = [];
     if (picker.controlling) {
-      // Pick against specific object(s)
       scene.traverse((obj) => {
         const objUuid = obj.userData.uuid || obj.uuid;
-        if (objUuid === picker.controlling) {
-          pickableObjects.push(obj);
-        }
+        if (objUuid === picker.controlling) pickable.push(obj);
       });
     } else {
-      // Pick against all meshes
-      scene.traverse((obj) => {
-        if (obj.isMesh || obj.isPoints || obj.isLine || obj.isLineSegments || obj.isSprite) {
-          pickableObjects.push(obj);
-        }
-      });
+      pickable = this.pickableObjects();
     }
-
-    if (pickableObjects.length === 0) {
-      debug("Picker raycast: no pickable objects found for controlling:", picker.controlling);
+    if (pickable.length === 0) {
       return { picker_uuid: picker.uuid, point: null };
     }
 
-    const intersects = raycaster.intersectObjects(pickableObjects, true);
-
-    if (intersects.length > 0) {
-      debug("Picker raycast hit:", intersects[0].point);
+    const intersects = this.raycaster.intersectObjects(pickable, true);
+    if (intersects.length === 0) {
+      return { picker_uuid: picker.uuid, point: null };
     }
-
-    if (intersects.length > 0) {
-      const hit = intersects[0];
-      return {
-        picker_uuid: picker.uuid,
-        point: hit.point ? [hit.point.x, hit.point.y, hit.point.z] : null,
-        distance: hit.distance,
-        faceIndex: hit.faceIndex ?? null,
-        object_uuid: hit.object.userData.uuid || hit.object.uuid,
-        modifiers: getModifiers(event),
-      };
-    }
-    return { picker_uuid: picker.uuid, point: null };
+    const hit = intersects[0];
+    return {
+      picker_uuid: picker.uuid,
+      point: hit.point ? [hit.point.x, hit.point.y, hit.point.z] : null,
+      distance: hit.distance,
+      faceIndex: hit.faceIndex ?? null,
+      object_uuid: hit.object.userData.uuid || hit.object.uuid,
+      modifiers: getModifiers(event),
+    };
   }
 
-  /**
-   * Get keyboard modifiers from event
-   */
-  function getModifiers(event) {
-    const mods = [];
-    if (event.shiftKey) mods.push("shift");
-    if (event.ctrlKey) mods.push("ctrl");
-    if (event.altKey) mods.push("alt");
-    if (event.metaKey) mods.push("meta");
-    return mods;
-  }
-
-  /**
-   * Handle picker events for a specific event type
-   */
-  function handlePickerEvent(event, eventType) {
-    for (const picker of pickers) {
+  handlePickerEvent(event, eventType) {
+    for (const picker of this.world.pickers) {
       if (picker.event === eventType) {
-        const result = performPickerRaycast(event, picker);
+        const result = this.performPickerRaycast(event, picker);
         if (result) {
-          model.set("_picker_event", result);
-          model.save_changes();
+          this.model.set("_picker_event", result);
+          this.model.save_changes();
         }
       }
     }
   }
 
-  /**
-   * Handle click events
-   */
-  function onClick(event) {
-    // Handle pickers
-    handlePickerEvent(event, "click");
-
-    if (!model.get("enable_picking")) return;
-
-    const hitInfo = performRaycast(event);
-
-    // Always update _click_info (even if null/empty) to trigger observers
-    model.set("_click_info", hitInfo || {});
-    model.save_changes();
+  onClick(event) {
+    this.handlePickerEvent(event, "click");
+    if (!this.model.get("enable_picking")) return;
+    const hitInfo = this.performRaycast(event);
+    this.model.set("_click_info", hitInfo || {});
+    this.model.save_changes();
   }
 
-  /**
-   * Handle double-click events
-   */
-  function onDblClick(event) {
-    // Handle pickers
-    handlePickerEvent(event, "dblclick");
-
-    if (!model.get("enable_picking")) return;
-
-    const hitInfo = performRaycast(event);
-    if (hitInfo) {
-      hitInfo.doubleClick = true;
-    }
-
-    model.set("_click_info", hitInfo || {});
-    model.save_changes();
+  onDblClick(event) {
+    this.handlePickerEvent(event, "dblclick");
+    if (!this.model.get("enable_picking")) return;
+    const hitInfo = this.performRaycast(event);
+    if (hitInfo) hitInfo.doubleClick = true;
+    this.model.set("_click_info", hitInfo || {});
+    this.model.save_changes();
   }
 
-  /**
-   * Handle mousedown events
-   */
-  function onMouseDown(event) {
-    handlePickerEvent(event, "mousedown");
-  }
-
-  /**
-   * Handle mouseup events
-   */
-  function onMouseUp(event) {
-    handlePickerEvent(event, "mouseup");
-  }
-
-  /**
-   * Handle hover/mousemove events (throttled)
-   */
-  let hoverTimeout = null;
-  let pickerMoveTimeout = null;
-  function onMouseMove(event) {
-    // Handle mousemove pickers (throttled separately)
-    if (!pickerMoveTimeout) {
-      pickerMoveTimeout = setTimeout(() => {
-        pickerMoveTimeout = null;
-        handlePickerEvent(event, "mousemove");
+  onMouseMove(event) {
+    if (!this.pickerMoveTimeout && this.world.pickers.length > 0) {
+      this.pickerMoveTimeout = setTimeout(() => {
+        this.pickerMoveTimeout = null;
+        this.handlePickerEvent(event, "mousemove");
       }, PICKER_THROTTLE_MS);
     }
 
-    if (!model.get("enable_picking")) return;
-
-    // Throttle hover events
-    if (hoverTimeout) return;
-
-    hoverTimeout = setTimeout(() => {
-      hoverTimeout = null;
-
-      const hitInfo = performRaycast(event);
-
-      // Only update if changed (compare by uuid)
-      const currentHover = model.get("_hover_info") || {};
+    // Hover raycasting is opt-in: it traverses the scene on every throttled
+    // mousemove, which is expensive for large point clouds.
+    if (!this.model.get("enable_picking") || !this.model.get("enable_hover")) {
+      return;
+    }
+    if (this.hoverTimeout) return;
+    this.hoverTimeout = setTimeout(() => {
+      this.hoverTimeout = null;
+      const hitInfo = this.performRaycast(event);
+      const current = this.model.get("_hover_info") || {};
       const newUuid = hitInfo ? hitInfo.uuid : null;
-      const oldUuid = currentHover.uuid || null;
-
+      const oldUuid = current.uuid || null;
       if (newUuid !== oldUuid) {
-        model.set("_hover_info", hitInfo || {});
-        model.save_changes();
+        this.model.set("_hover_info", hitInfo || {});
+        this.model.save_changes();
       }
     }, HOVER_THROTTLE_MS);
   }
 
-  // Initialize - build/reuse shared scene and camera, create controls for this view
-  rebuild();
+  // -- teardown -----------------------------------------------------------
 
-  // Start animation loop
-  animate();
-
-  // Add event listeners for picking
-  renderer.domElement.addEventListener("click", onClick);
-  renderer.domElement.addEventListener("dblclick", onDblClick);
-  renderer.domElement.addEventListener("mousedown", onMouseDown);
-  renderer.domElement.addEventListener("mouseup", onMouseUp);
-  renderer.domElement.addEventListener("mousemove", onMouseMove);
-
-  // Watch for model changes
-  // Scene updates preserve camera position
-  model.on("change:_scene_data", () => {
-    shared.needsRebuild = true;
-    updateScene();
-  });
-  // Buffer updates require scene update
-  model.on("change:_buffers_changed", () => {
-    updateBuffers();
-    shared.needsRebuild = true;
-    updateScene();
-  });
-  // Camera and controls updates require full rebuild
-  model.on("change:_camera_data", () => {
-    shared.needsRebuild = true;
-    rebuild();
-  });
-  model.on("change:_controls_data", () => {
-    shared.needsRebuild = true;
-    rebuild();
-  });
-  model.on("change:width", onResize);
-  model.on("change:height", onResize);
-
-  // Cleanup on widget removal
-  return () => {
-    if (animationId) {
-      cancelAnimationFrame(animationId);
-    }
-    if (hoverTimeout) {
-      clearTimeout(hoverTimeout);
-    }
-    if (pickerMoveTimeout) {
-      clearTimeout(pickerMoveTimeout);
-    }
-    renderer.domElement.removeEventListener("click", onClick);
-    renderer.domElement.removeEventListener("dblclick", onDblClick);
-    renderer.domElement.removeEventListener("mousedown", onMouseDown);
-    renderer.domElement.removeEventListener("mouseup", onMouseUp);
-    renderer.domElement.removeEventListener("mousemove", onMouseMove);
-    if (controls) {
-      controls.dispose();
-    }
-    renderer.dispose();
-    container.remove();
-
-    // Release shared objects (will be deleted when viewCount reaches 0)
-    releaseSharedObjects(modelId);
-  };
+  dispose() {
+    if (this.animationId) cancelAnimationFrame(this.animationId);
+    if (this.hoverTimeout) clearTimeout(this.hoverTimeout);
+    if (this.pickerMoveTimeout) clearTimeout(this.pickerMoveTimeout);
+    if (this.cameraSyncTimeout) clearTimeout(this.cameraSyncTimeout);
+    const dom = this.renderer.domElement;
+    dom.removeEventListener("click", this._onClick);
+    dom.removeEventListener("dblclick", this._onDblClick);
+    dom.removeEventListener("mousedown", this._onMouseDown);
+    dom.removeEventListener("mouseup", this._onMouseUp);
+    dom.removeEventListener("mousemove", this._onMouseMove);
+    this.model.off("change:width", this._onResize);
+    this.model.off("change:height", this._onResize);
+    this.controls?.dispose();
+    this.renderer.dispose();
+    this.container.remove();
+    this.world.views.delete(this);
+  }
 }
 
-export default { render };
+function getModifiers(event) {
+  const mods = [];
+  if (event.shiftKey) mods.push("shift");
+  if (event.ctrlKey) mods.push("ctrl");
+  if (event.altKey) mods.push("alt");
+  if (event.metaKey) mods.push("meta");
+  return mods;
+}
 
+// ---------------------------------------------------------------------------
+// anywidget entry points
+// ---------------------------------------------------------------------------
+
+export default {
+  initialize({ model }) {
+    const world = new World(model);
+    model._anythreejsWorld = world;
+    return () => {
+      world.dispose();
+      delete model._anythreejsWorld;
+    };
+  },
+
+  render({ model, el }) {
+    let world = model._anythreejsWorld;
+    if (!world) {
+      // Environments that skip initialize (older anywidget) still work.
+      world = new World(model);
+      model._anythreejsWorld = world;
+    }
+    const view = new View(world, model, el);
+    return () => view.dispose();
+  },
+};

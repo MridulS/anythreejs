@@ -32,7 +32,16 @@ from .material import (
     SpriteMaterial,
     LineMaterial,
 )
-from .objects import Mesh, Points, Line, LineSegments, Group, Sprite, Line2
+from .objects import (
+    RenderableObject,
+    Mesh,
+    Points,
+    Line,
+    LineSegments,
+    Group,
+    Sprite,
+    Line2,
+)
 from .lights import (
     AmbientLight,
     DirectionalLight,
@@ -88,6 +97,7 @@ __all__ = [
     "SpriteMaterial",
     "LineMaterial",
     # Objects
+    "RenderableObject",
     "Mesh",
     "Points",
     "Line",

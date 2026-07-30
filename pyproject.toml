@@ -37,5 +37,7 @@ build-backend = "uv_build"
 dev = [
     "jupyterlab>=4.5.0",
     "prek>=0.2.21",
+    "pytest>=9.1.1",
+    "pytest-playwright>=0.8.0",
     "ruff>=0.14.9",
 ]
