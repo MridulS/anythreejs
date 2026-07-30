@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    name: Unit, protocol & performance tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Sync environment
+        run: uv sync --group dev
+      - name: Lint
+        run: uv run ruff check src/ tests/
+      - name: Format check
+        run: uv run ruff format --check src/ tests/
+      - name: Run tests (browser tests skip without a browser)
+        run: uv run pytest tests/ -q
+
+  browser:
+    name: Playwright browser harness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Sync environment
+        run: uv sync --group dev
+      - name: Install Chromium
+        run: uv run playwright install --with-deps chromium
+      # No committed HAR: the first (and only) run in CI records three.js
+      # from esm.sh over the network.
+      - name: Run browser tests
+        run: uv run pytest tests/test_browser.py -q
+
+  plopp:
+    name: plopp compatibility gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Sync environment
+        run: uv sync --group dev
+      - name: Fetch plopp (anythreejs branch)
+        run: git clone --depth 1 --branch anythreejs https://github.com/MridulS/plopp external/plopp
+      - name: Install plopp and scientific deps
+        run: uv pip install -e ./external/plopp scipp xarray h5py pooch
+      - name: Integration tests
+        run: uv run --no-sync pytest tests/test_plopp_compat.py -q
+      - name: plopp's own 3D test suites
+        run: >-
+          uv run --no-sync pytest
+          external/plopp/tests/plotting/scatter3d_test.py
+          external/plopp/tests/plotting/mesh3d_test.py
+          -q -W "ignore::PendingDeprecationWarning"
