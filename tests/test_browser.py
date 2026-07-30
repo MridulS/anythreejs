@@ -296,6 +296,80 @@ def test_hex8_colors_and_torus(harness):
     harness.assert_clean()
 
 
+def test_every_catalog_type_builds_in_browser(harness):
+    """Anti-drift gate: every type Python can produce must build a real
+    three.js object in the JS registry. A missing JS case — the old
+    TorusGeometry-renders-a-box bug — fails here by construction."""
+    from anythreejs.core.spec import CATALOG
+
+    scene = p3.Scene(background="#ffffff")
+    checked = {}  # uuid -> catalog type name
+
+    def register(obj, node):
+        checked[obj.uuid] = obj._type
+        scene.add(node)
+
+    def line_points(n):
+        return p3.BufferGeometry(
+            attributes={
+                "position": p3.BufferAttribute(np.zeros((n, 3), dtype="float32"))
+            }
+        )
+
+    basic = p3.MeshBasicMaterial()
+    box = p3.BoxGeometry()
+    for name, entry in CATALOG.items():
+        if name == "Material":
+            continue  # abstract base, not a renderable JS type
+        cls = getattr(p3, name)
+        category = entry["category"]
+        if category == "geometry":
+            geometry = cls()
+            register(geometry, p3.Mesh(geometry=geometry, material=basic))
+        elif category == "material":
+            material = cls()
+            if name == "LineMaterial":
+                node = p3.Line2(
+                    geometry=p3.LineGeometry(
+                        positions=np.array([[0, 0, 0], [1, 1, 1]], dtype="float32")
+                    ),
+                    material=material,
+                )
+            elif name == "SpriteMaterial":
+                node = p3.Sprite(material=material)
+            elif name == "PointsMaterial":
+                node = p3.Points(geometry=line_points(3), material=material)
+            elif name in ("LineBasicMaterial", "LineDashedMaterial"):
+                node = p3.Line(geometry=line_points(2), material=material)
+            else:
+                node = p3.Mesh(geometry=box, material=material)
+            register(material, node)
+        elif category in ("light", "helper"):
+            instance = cls()
+            register(instance, instance)
+        elif category == "texture":
+            texture = cls(string="x") if name == "TextTexture" else cls()
+            register(texture, p3.Sprite(material=p3.SpriteMaterial(map=texture)))
+
+    camera = p3.PerspectiveCamera(position=[0, 0, 5])
+    controls = [p3.OrbitControls(controlling=camera), p3.TrackballControls()]
+    renderer = p3.Renderer(scene=scene, camera=camera, controls=controls)
+    harness.boot(renderer)
+
+    missing = [
+        f"{type_name} ({uuid})"
+        for uuid, type_name in checked.items()
+        if harness.object(uuid) is None
+    ]
+    assert not missing, f"catalog types widget.js failed to build: {missing}"
+
+    summary = harness.summary()
+    assert summary["byType"]["OrbitControls"] == 1
+    assert summary["byType"]["TrackballControls"] == 1
+    harness.render_info()  # full render over everything must not error
+    harness.assert_clean()
+
+
 def test_plopp_scatter3d_renders_in_browser(harness):
     pytest.importorskip("scipp")
     pp = pytest.importorskip("plopp")

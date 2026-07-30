@@ -1,206 +1,26 @@
 """
 Camera controls for interactive manipulation.
+
+OrbitControls and TrackballControls are generated from the declarative
+catalog in ``spec.py``. Picker carries JS-fed hit state and stays
+hand-written.
 """
 
 from typing import Any
+
 from .base import ThreeJSBase
+from .spec import make_class
+
+__all__ = ["OrbitControls", "TrackballControls", "Picker"]
+
+OrbitControls = make_class("OrbitControls", ThreeJSBase)
+TrackballControls = make_class("TrackballControls", ThreeJSBase)
 
 
 def _controlling_ref(controlling):
     if controlling is None:
         return None
     return controlling.uuid if hasattr(controlling, "uuid") else controlling
-
-
-class OrbitControls(ThreeJSBase):
-    """Orbit controls for camera manipulation."""
-
-    _type = "OrbitControls"
-
-    def __init__(
-        self,
-        controlling=None,
-        target: tuple = (0, 0, 0),
-        enableDamping: bool = True,
-        dampingFactor: float = 0.05,
-        enableZoom: bool = True,
-        enableRotate: bool = True,
-        enablePan: bool = True,
-        autoRotate: bool = False,
-        autoRotateSpeed: float = 2.0,
-        screenSpacePanning: bool = True,
-        **kwargs,
-    ):
-        super().__init__(**kwargs)
-        self._controlling = controlling
-        self._target = list(target)
-        self._enableDamping = enableDamping
-        self._dampingFactor = dampingFactor
-        self._enableZoom = enableZoom
-        self._enableRotate = enableRotate
-        self._enablePan = enablePan
-        self._autoRotate = autoRotate
-        self._autoRotateSpeed = autoRotateSpeed
-        self._screenSpacePanning = screenSpacePanning
-
-    @property
-    def controlling(self):
-        return self._controlling
-
-    @controlling.setter
-    def controlling(self, value):
-        old = self._controlling
-        self._controlling = value
-        self._notify("controlling", old, value)
-
-    @property
-    def target(self) -> tuple:
-        return tuple(self._target)
-
-    @target.setter
-    def target(self, value):
-        old = self._target
-        self._target = list(value)
-        self._notify("target", old, self._target)
-
-    @property
-    def enableDamping(self) -> bool:
-        return self._enableDamping
-
-    @enableDamping.setter
-    def enableDamping(self, value: bool):
-        old = self._enableDamping
-        self._enableDamping = value
-        self._notify("enableDamping", old, value)
-
-    @property
-    def dampingFactor(self) -> float:
-        return self._dampingFactor
-
-    @dampingFactor.setter
-    def dampingFactor(self, value: float):
-        old = self._dampingFactor
-        self._dampingFactor = value
-        self._notify("dampingFactor", old, value)
-
-    @property
-    def enableZoom(self) -> bool:
-        return self._enableZoom
-
-    @enableZoom.setter
-    def enableZoom(self, value: bool):
-        old = self._enableZoom
-        self._enableZoom = value
-        self._notify("enableZoom", old, value)
-
-    @property
-    def enableRotate(self) -> bool:
-        return self._enableRotate
-
-    @enableRotate.setter
-    def enableRotate(self, value: bool):
-        old = self._enableRotate
-        self._enableRotate = value
-        self._notify("enableRotate", old, value)
-
-    @property
-    def enablePan(self) -> bool:
-        return self._enablePan
-
-    @enablePan.setter
-    def enablePan(self, value: bool):
-        old = self._enablePan
-        self._enablePan = value
-        self._notify("enablePan", old, value)
-
-    @property
-    def autoRotate(self) -> bool:
-        return self._autoRotate
-
-    @autoRotate.setter
-    def autoRotate(self, value: bool):
-        old = self._autoRotate
-        self._autoRotate = value
-        self._notify("autoRotate", old, value)
-
-    @property
-    def autoRotateSpeed(self) -> float:
-        return self._autoRotateSpeed
-
-    @autoRotateSpeed.setter
-    def autoRotateSpeed(self, value: float):
-        old = self._autoRotateSpeed
-        self._autoRotateSpeed = value
-        self._notify("autoRotateSpeed", old, value)
-
-    @property
-    def screenSpacePanning(self) -> bool:
-        return self._screenSpacePanning
-
-    @screenSpacePanning.setter
-    def screenSpacePanning(self, value: bool):
-        old = self._screenSpacePanning
-        self._screenSpacePanning = value
-        self._notify("screenSpacePanning", old, value)
-
-    def to_dict(self, buffer_manager=None, flat=False) -> dict[str, Any]:
-        data = {
-            "type": self._type,
-            "uuid": self._uuid,
-            "target": list(self._target),
-            "enableDamping": self._enableDamping,
-            "dampingFactor": self._dampingFactor,
-            "enableZoom": self._enableZoom,
-            "enableRotate": self._enableRotate,
-            "enablePan": self._enablePan,
-            "autoRotate": self._autoRotate,
-            "autoRotateSpeed": self._autoRotateSpeed,
-            "screenSpacePanning": self._screenSpacePanning,
-        }
-        if self._controlling is not None:
-            data["controlling"] = _controlling_ref(self._controlling)
-        return data
-
-
-class TrackballControls(ThreeJSBase):
-    """Trackball controls for camera manipulation."""
-
-    _type = "TrackballControls"
-
-    def __init__(self, controlling=None, target: tuple = (0, 0, 0), **kwargs):
-        super().__init__(**kwargs)
-        self._controlling = controlling
-        self._target = list(target)
-
-    @property
-    def controlling(self):
-        return self._controlling
-
-    @controlling.setter
-    def controlling(self, value):
-        old = self._controlling
-        self._controlling = value
-        self._notify("controlling", old, value)
-
-    @property
-    def target(self) -> tuple:
-        return tuple(self._target)
-
-    @target.setter
-    def target(self, value):
-        old = self._target
-        self._target = list(value)
-        self._notify("target", old, self._target)
-
-    def to_dict(self, buffer_manager=None, flat=False) -> dict[str, Any]:
-        data = {
-            "type": self._type,
-            "uuid": self._uuid,
-            "target": list(self._target),
-        }
-        if self._controlling is not None:
-            data["controlling"] = _controlling_ref(self._controlling)
-        return data
 
 
 class Picker(ThreeJSBase):

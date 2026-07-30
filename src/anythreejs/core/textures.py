@@ -1,5 +1,9 @@
 """
 Texture classes.
+
+TextTexture is generated from the declarative catalog in ``spec.py``;
+DataTexture has custom shape-inference and binary serialization and stays
+hand-written.
 """
 
 from typing import Any
@@ -8,59 +12,11 @@ import numpy as np
 
 from .base import ThreeJSBase
 from .buffer import binary_wrapper
+from .spec import make_class
 
+__all__ = ["TextTexture", "DataTexture"]
 
-class TextTexture(ThreeJSBase):
-    """Texture containing rendered text."""
-
-    _type = "TextTexture"
-
-    def __init__(
-        self,
-        string: str = "",
-        color: str = "white",
-        size: int = 100,
-        fontFace: str = "Arial",
-        squareTexture: bool = False,
-        **kwargs,
-    ):
-        super().__init__(**kwargs)
-        self._string = string
-        self._color = color
-        self._size = size
-        self._fontFace = fontFace
-        self._squareTexture = squareTexture
-
-    @property
-    def string(self) -> str:
-        return self._string
-
-    @string.setter
-    def string(self, value: str):
-        old = self._string
-        self._string = value
-        self._notify("string", old, value)
-
-    @property
-    def color(self) -> str:
-        return self._color
-
-    @color.setter
-    def color(self, value: str):
-        old = self._color
-        self._color = value
-        self._notify("color", old, value)
-
-    def to_dict(self, buffer_manager=None, flat=False) -> dict[str, Any]:
-        return {
-            "type": self._type,
-            "uuid": self._uuid,
-            "string": self._string,
-            "color": self._color,
-            "size": self._size,
-            "fontFace": self._fontFace,
-            "squareTexture": self._squareTexture,
-        }
+TextTexture = make_class("TextTexture", ThreeJSBase)
 
 
 class DataTexture(ThreeJSBase):
