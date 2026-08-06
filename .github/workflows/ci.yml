@@ -46,6 +46,29 @@ jobs:
       - name: Run browser tests
         run: uv run pytest tests/test_browser.py -q
 
+  plopp-drop-in:
+    name: Drop-in gate (unmodified upstream plopp)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Sync environment
+        run: uv sync --group dev
+      - name: Fetch unmodified upstream plopp (imports pythreejs)
+        run: git clone --depth 1 https://github.com/scipp/plopp upstream-plopp
+      - name: Install upstream plopp and scientific deps
+        run: uv pip install -e ./upstream-plopp scipp xarray h5py pooch
+      # tests/shims/pythreejs.py aliases pythreejs -> anythreejs, so this
+      # runs upstream's own 3D suites, byte-for-byte unmodified, against us.
+      - name: Run upstream 3D suites through the pythreejs shim
+        run: >-
+          PYTHONPATH=tests/shims uv run --no-sync pytest
+          upstream-plopp/tests/plotting/scatter3d_test.py
+          upstream-plopp/tests/plotting/mesh3d_test.py
+          -q -W "ignore::PendingDeprecationWarning"
+
   plopp:
     name: plopp compatibility gate
     runs-on: ubuntu-latest

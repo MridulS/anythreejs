@@ -16,94 +16,15 @@ deployments rely on. Requires `uv run playwright install chromium`; tests
 skip when the browser is unavailable.
 """
 
-from pathlib import Path
-
 import numpy as np
 import pytest
 
 pytest.importorskip("pytest_playwright")
 
 import anythreejs as p3  # noqa: E402
-from harness_utils import messages_payload, snapshot_payload  # noqa: E402
 
-TESTS_DIR = Path(__file__).parent
-REPO_ROOT = TESTS_DIR.parent
-ORIGIN = "http://anythreejs.test"
-
-SERVED = {
-    "/index.html": (TESTS_DIR / "harness" / "index.html", "text/html"),
-    "/harness.js": (TESTS_DIR / "harness" / "harness.js", "text/javascript"),
-    "/widget.js": (
-        REPO_ROOT / "src" / "anythreejs" / "static" / "widget.js",
-        "text/javascript",
-    ),
-}
-
-
-class Driver:
-    def __init__(self, page, errors):
-        self.page = page
-        self.errors = errors
-
-    def boot(self, renderer, **state):
-        payload = {"scene_state": snapshot_payload(renderer), "state": state}
-        return self.page.evaluate("(p) => window.harness.boot(p)", payload)
-
-    def apply(self, sent):
-        payload = messages_payload(sent)
-        sent.clear()
-        return self.page.evaluate("(m) => window.harness.applyMessages(m)", payload)
-
-    def set_scene_state(self, renderer):
-        return self.page.evaluate(
-            "(p) => window.harness.setSceneState(p)", snapshot_payload(renderer)
-        )
-
-    def summary(self):
-        return self.page.evaluate("window.harness.summary()")
-
-    def object(self, uuid):
-        return self.page.evaluate("(u) => window.harness.object(u)", uuid)
-
-    def pixel(self, fx, fy):
-        return self.page.evaluate(f"window.harness.readPixel({fx}, {fy})")
-
-    def render_info(self):
-        return self.page.evaluate("window.harness.renderInfo()")
-
-    def saved_states(self):
-        return self.page.evaluate("window.harness.savedStates()")
-
-    def assert_clean(self):
-        assert not self.errors, f"browser errors: {self.errors}"
-
-
-@pytest.fixture
-def harness(page):
-    errors = []
-    page.on("pageerror", lambda err: errors.append(f"pageerror: {err}"))
-    page.on(
-        "console",
-        lambda msg: errors.append(f"console.error: {msg.text}")
-        if msg.type == "error"
-        else None,
-    )
-
-    def serve(route):
-        path = route.request.url.split("anythreejs.test", 1)[1].split("?")[0]
-        entry = SERVED.get(path)
-        if entry:
-            route.fulfill(path=str(entry[0]), content_type=entry[1])
-        else:
-            route.abort()
-
-    page.route(f"{ORIGIN}/*", serve)
-    # The bundle must never reach for the network.
-    page.context.set_offline(True)
-
-    page.goto(f"{ORIGIN}/index.html")
-    page.wait_for_function("window.harnessReady === true")
-    return Driver(page, errors)
+# The shared `harness` fixture (tests/conftest.py) serves the shipped
+# bundle from a virtual origin with the browser forced offline.
 
 
 def box_fixture(color="#ff0000", background="#ffffff"):

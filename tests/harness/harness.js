@@ -106,7 +106,13 @@ const harness = {
 
     this.world = this.model._anythreejsWorld;
     this.view = [...this.world.views][0];
-    return this.summary();
+
+    const t0 = performance.now();
+    this.view.renderer.render(this.world.scene, this.world.camera);
+    const firstRenderMs = performance.now() - t0;
+    const summary = this.summary();
+    summary.firstRenderMs = firstRenderMs;
+    return summary;
   },
 
   applyMessages(messages) {
@@ -115,6 +121,72 @@ const harness = {
       this.model.emit("msg:custom", message.content, buffers);
     }
     return this.summary();
+  },
+
+  /** Apply messages and force a frame, reporting JS-side timings. */
+  applyMessagesTimed(messages) {
+    const t0 = performance.now();
+    for (const message of messages) {
+      const buffers = (message.buffers ?? []).map(b64ToDataView);
+      this.model.emit("msg:custom", message.content, buffers);
+    }
+    const applyMs = performance.now() - t0;
+    const t1 = performance.now();
+    this.view.renderer.render(this.world.scene, this.world.camera);
+    const renderMs = performance.now() - t1;
+    return { applyMs, renderMs };
+  },
+
+  /** Count animation frames over a duration; the View's own loop renders
+   * every frame, so this reports the effective frame rate under load. */
+  measureFps(durationMs) {
+    return new Promise((resolve) => {
+      let frames = 0;
+      const start = performance.now();
+      const tick = () => {
+        frames += 1;
+        const elapsed = performance.now() - start;
+        if (elapsed >= durationMs) {
+          resolve({ frames, fps: (frames / elapsed) * 1000 });
+        } else {
+          requestAnimationFrame(tick);
+        }
+      };
+      requestAnimationFrame(tick);
+    });
+  },
+
+  setAutoRotate(enabled) {
+    if (this.view.controls) {
+      this.view.controls.autoRotate = enabled;
+      this.view.controls.autoRotateSpeed = 20;
+    }
+  },
+
+  /** Full-frame RGBA readback (rows flipped to top-down), base64-encoded. */
+  screenshot() {
+    const renderer = this.view.renderer;
+    renderer.render(this.world.scene, this.world.camera);
+    const gl = renderer.getContext();
+    const width = gl.drawingBufferWidth;
+    const height = gl.drawingBufferHeight;
+    const pixels = new Uint8Array(width * height * 4);
+    gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+
+    const flipped = new Uint8Array(width * height * 4);
+    const rowBytes = width * 4;
+    for (let y = 0; y < height; y++) {
+      flipped.set(
+        pixels.subarray(y * rowBytes, (y + 1) * rowBytes),
+        (height - 1 - y) * rowBytes
+      );
+    }
+
+    let binary = "";
+    for (let i = 0; i < flipped.length; i += 8192) {
+      binary += String.fromCharCode(...flipped.subarray(i, i + 8192));
+    }
+    return { width, height, b64: btoa(binary) };
   },
 
   setSceneState(payload) {

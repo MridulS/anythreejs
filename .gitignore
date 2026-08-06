@@ -224,3 +224,6 @@ Untitled*.ipynb
 
 # Node build tooling for the widget bundle
 node_modules/
+
+# Upstream plopp clone used by the CI drop-in gate
+upstream-plopp/

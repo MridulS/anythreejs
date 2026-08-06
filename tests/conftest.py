@@ -1,9 +1,24 @@
-"""Test fixtures: run ipywidgets without a kernel and capture the delta
-messages a Renderer sends."""
+"""Test fixtures: run ipywidgets without a kernel, capture the delta
+messages a Renderer sends, and drive the browser harness."""
+
+from pathlib import Path
 
 import comm
 import pytest
 from comm.base_comm import BaseComm
+
+TESTS_DIR = Path(__file__).parent
+REPO_ROOT = TESTS_DIR.parent
+HARNESS_ORIGIN = "http://anythreejs.test"
+
+HARNESS_FILES = {
+    "/index.html": (TESTS_DIR / "harness" / "index.html", "text/html"),
+    "/harness.js": (TESTS_DIR / "harness" / "harness.js", "text/javascript"),
+    "/widget.js": (
+        REPO_ROOT / "src" / "anythreejs" / "static" / "widget.js",
+        "text/javascript",
+    ),
+}
 
 
 class DummyComm(BaseComm):
@@ -39,6 +54,98 @@ def browser(launch_browser):
         pytest.skip(f"playwright browser unavailable: {exc}")
     yield browser
     browser.close()
+
+
+class HarnessDriver:
+    """Python-side driver for the browser harness page."""
+
+    def __init__(self, page, errors):
+        self.page = page
+        self.errors = errors
+
+    def boot(self, renderer, **state):
+        from harness_utils import snapshot_payload
+
+        payload = {"scene_state": snapshot_payload(renderer), "state": state}
+        return self.page.evaluate("(p) => window.harness.boot(p)", payload)
+
+    def apply(self, sent):
+        from harness_utils import messages_payload
+
+        payload = messages_payload(sent)
+        sent.clear()
+        return self.page.evaluate("(m) => window.harness.applyMessages(m)", payload)
+
+    def apply_timed(self, sent):
+        from harness_utils import messages_payload
+
+        payload = messages_payload(sent)
+        sent.clear()
+        return self.page.evaluate(
+            "(m) => window.harness.applyMessagesTimed(m)", payload
+        )
+
+    def set_scene_state(self, renderer):
+        from harness_utils import snapshot_payload
+
+        return self.page.evaluate(
+            "(p) => window.harness.setSceneState(p)", snapshot_payload(renderer)
+        )
+
+    def summary(self):
+        return self.page.evaluate("window.harness.summary()")
+
+    def object(self, uuid):
+        return self.page.evaluate("(u) => window.harness.object(u)", uuid)
+
+    def pixel(self, fx, fy):
+        return self.page.evaluate(f"window.harness.readPixel({fx}, {fy})")
+
+    def render_info(self):
+        return self.page.evaluate("window.harness.renderInfo()")
+
+    def saved_states(self):
+        return self.page.evaluate("window.harness.savedStates()")
+
+    def measure_fps(self, duration_ms=1000):
+        return self.page.evaluate(f"window.harness.measureFps({duration_ms})")
+
+    def set_auto_rotate(self, enabled):
+        return self.page.evaluate("(v) => window.harness.setAutoRotate(v)", enabled)
+
+    def screenshot(self):
+        return self.page.evaluate("window.harness.screenshot()")
+
+    def assert_clean(self):
+        assert not self.errors, f"browser errors: {self.errors}"
+
+
+@pytest.fixture
+def harness(page):
+    errors = []
+    page.on("pageerror", lambda err: errors.append(f"pageerror: {err}"))
+    page.on(
+        "console",
+        lambda msg: errors.append(f"console.error: {msg.text}")
+        if msg.type == "error"
+        else None,
+    )
+
+    def serve(route):
+        path = route.request.url.split("anythreejs.test", 1)[1].split("?")[0]
+        entry = HARNESS_FILES.get(path)
+        if entry:
+            route.fulfill(path=str(entry[0]), content_type=entry[1])
+        else:
+            route.abort()
+
+    page.route(f"{HARNESS_ORIGIN}/*", serve)
+    # The shipped bundle must never reach for the network.
+    page.context.set_offline(True)
+
+    page.goto(f"{HARNESS_ORIGIN}/index.html")
+    page.wait_for_function("window.harnessReady === true")
+    return HarnessDriver(page, errors)
 
 
 @pytest.fixture
