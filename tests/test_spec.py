@@ -72,3 +72,20 @@ def test_vector_fields_expose_tuples_and_serialize_lists():
     controls = p3.OrbitControls(target=(1, 2, 3))
     assert controls.target == (1, 2, 3)
     assert controls.to_dict()["target"] == [1, 2, 3]
+
+
+def test_shader_material_matplotgl_style():
+    """matplotgl builds scatter markers with custom shaders."""
+    material = p3.ShaderMaterial(
+        vertexShader="void main() { gl_Position = vec4(position, 1.0); }",
+        fragmentShader="void main() { gl_FragColor = vec4(1.0); }",
+        transparent=True,
+    )
+    spec = material.to_dict(flat=True)
+    assert spec["type"] == "ShaderMaterial"
+    assert spec["vertexShader"].startswith("void main")
+    assert spec["transparent"] is True
+    assert "uniforms" not in spec  # omitted when unset
+
+    material.uniforms = {"u_scale": {"value": 2.0}}
+    assert material.to_dict()["uniforms"] == {"u_scale": {"value": 2.0}}

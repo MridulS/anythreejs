@@ -84,7 +84,10 @@ class Renderer(anywidget.AnyWidget):
         renderer  # Display in notebook
     """
 
-    _esm = pathlib.Path(__file__).parent / "widget.js"
+    # The shipped widget is a self-contained esbuild bundle (three.js
+    # included) — no CDN or network access at runtime. Source lives in
+    # js/widget.js; rebuild with `npm run build`.
+    _esm = pathlib.Path(__file__).parent / "static" / "widget.js"
     _css = pathlib.Path(__file__).parent / "widget.css"
 
     # Normalized snapshot of the scene graph (Python -> JS, on full resync)

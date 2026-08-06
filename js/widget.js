@@ -16,12 +16,12 @@
  *   applied epoch so Python can drop stale updates.
  */
 
-import * as THREE from "https://esm.sh/three@0.182.0";
-import { OrbitControls } from "https://esm.sh/three@0.182.0/addons/controls/OrbitControls.js";
-import { TrackballControls } from "https://esm.sh/three@0.182.0/addons/controls/TrackballControls.js";
-import { Line2 } from "https://esm.sh/three@0.182.0/addons/lines/Line2.js";
-import { LineGeometry } from "https://esm.sh/three@0.182.0/addons/lines/LineGeometry.js";
-import { LineMaterial } from "https://esm.sh/three@0.182.0/addons/lines/LineMaterial.js";
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { TrackballControls } from "three/addons/controls/TrackballControls.js";
+import { Line2 } from "three/addons/lines/Line2.js";
+import { LineGeometry } from "three/addons/lines/LineGeometry.js";
+import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 
 // Debug logging flag - set to true to enable debug logs
 const DEBUG = false;
@@ -101,6 +101,7 @@ const MATERIAL_TYPES = new Set([
   "LineDashedMaterial",
   "SpriteMaterial",
   "LineMaterial",
+  "ShaderMaterial",
 ]);
 
 const TEXTURE_TYPES = new Set(["DataTexture", "TextTexture"]);
@@ -550,6 +551,21 @@ function buildMaterial(spec, world) {
       return new THREE.SpriteMaterial(props);
     }
 
+    case "ShaderMaterial": {
+      const params = {
+        transparent: spec.transparent ?? false,
+        opacity: spec.opacity ?? 1,
+        visible: spec.visible ?? true,
+        side: side,
+        depthTest: spec.depthTest ?? true,
+        depthWrite: spec.depthWrite ?? true,
+      };
+      if (spec.vertexShader) params.vertexShader = spec.vertexShader;
+      if (spec.fragmentShader) params.fragmentShader = spec.fragmentShader;
+      if (spec.uniforms) params.uniforms = structuredClone(spec.uniforms);
+      return new THREE.ShaderMaterial(params);
+    }
+
     case "LineMaterial": {
       const mat = new LineMaterial({
         color: colorOf(spec.color).getHex(),
@@ -976,6 +992,11 @@ class World {
           break;
         case "map":
           mat.map = value ? this.ensure(value) : null;
+          break;
+        case "uniforms":
+          if (mat.isShaderMaterial && value) {
+            mat.uniforms = structuredClone(value);
+          }
           break;
         case "resolution":
           if (mat.resolution && Array.isArray(value)) {

@@ -1,0 +1,12 @@
+{
+  "name": "anythreejs-widget",
+  "private": true,
+  "description": "Build tooling for the anythreejs widget bundle (three.js is bundled in; no CDN at runtime)",
+  "scripts": {
+    "build": "esbuild js/widget.js --bundle --format=esm --minify --outfile=src/anythreejs/static/widget.js"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "three": "0.182.0"
+  }
+}

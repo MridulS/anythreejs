@@ -9,10 +9,11 @@ three.js world, actual rendered pixels (gl.readPixels via software WebGL),
 GPU resource counts (renderer.info.memory), and the interactive-orbit
 camera sync-back round trip.
 
-three.js is fetched from esm.sh on the first run and recorded into
-tests/harness/.cache/esm.har (gitignored); subsequent runs replay it
-offline. Requires `uv run playwright install chromium`; tests skip when
-the browser is unavailable.
+The page loads the *shipped* widget bundle (src/anythreejs/static/widget.js,
+three.js included) with the browser forced offline — so these tests also
+prove the bundle is fully self-contained, which is what air-gapped
+deployments rely on. Requires `uv run playwright install chromium`; tests
+skip when the browser is unavailable.
 """
 
 from pathlib import Path
@@ -33,17 +34,10 @@ SERVED = {
     "/index.html": (TESTS_DIR / "harness" / "index.html", "text/html"),
     "/harness.js": (TESTS_DIR / "harness" / "harness.js", "text/javascript"),
     "/widget.js": (
-        REPO_ROOT / "src" / "anythreejs" / "widget.js",
+        REPO_ROOT / "src" / "anythreejs" / "static" / "widget.js",
         "text/javascript",
     ),
 }
-
-HAR = TESTS_DIR / "harness" / ".cache" / "esm.har"
-# Decided once per session: a missing HAR means this whole run records from
-# the network; an existing HAR means the whole run replays it with the
-# browser forced offline, so any gap in the recording fails loudly instead
-# of silently falling back to the network. To re-record: delete .cache/.
-RECORD_HAR = not HAR.exists()
 
 
 class Driver:
@@ -104,11 +98,8 @@ def harness(page):
             route.abort()
 
     page.route(f"{ORIGIN}/*", serve)
-
-    HAR.parent.mkdir(exist_ok=True)
-    page.route_from_har(str(HAR), url="**/esm.sh/**", update=RECORD_HAR)
-    if not RECORD_HAR:
-        page.context.set_offline(True)
+    # The bundle must never reach for the network.
+    page.context.set_offline(True)
 
     page.goto(f"{ORIGIN}/index.html")
     page.wait_for_function("window.harnessReady === true")

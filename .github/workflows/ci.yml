@@ -21,6 +21,11 @@ jobs:
         run: uv run ruff check src/ tests/
       - name: Format check
         run: uv run ruff format --check src/ tests/
+      - name: Verify committed widget bundle is current
+        run: |
+          npm ci
+          npm run build
+          git diff --exit-code src/anythreejs/static/widget.js
       - name: Run tests (browser tests skip without a browser)
         run: uv run pytest tests/ -q
 
@@ -36,8 +41,8 @@ jobs:
         run: uv sync --group dev
       - name: Install Chromium
         run: uv run playwright install --with-deps chromium
-      # No committed HAR: the first (and only) run in CI records three.js
-      # from esm.sh over the network.
+      # The harness serves the committed self-contained bundle with the
+      # browser forced offline — no network at runtime.
       - name: Run browser tests
         run: uv run pytest tests/test_browser.py -q
 

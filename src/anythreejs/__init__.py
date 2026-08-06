@@ -58,6 +58,7 @@ from .core import (
     LineDashedMaterial,
     SpriteMaterial,
     LineMaterial,
+    ShaderMaterial,
     # Objects
     RenderableObject,
     Mesh,
@@ -138,6 +139,7 @@ __all__ = [
     "LineDashedMaterial",
     "SpriteMaterial",
     "LineMaterial",
+    "ShaderMaterial",
     # Objects
     "RenderableObject",
     "Mesh",

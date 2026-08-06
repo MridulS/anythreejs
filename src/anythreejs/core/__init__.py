@@ -31,6 +31,7 @@ from .material import (
     LineDashedMaterial,
     SpriteMaterial,
     LineMaterial,
+    ShaderMaterial,
 )
 from .objects import (
     RenderableObject,
@@ -96,6 +97,7 @@ __all__ = [
     "LineDashedMaterial",
     "SpriteMaterial",
     "LineMaterial",
+    "ShaderMaterial",
     # Objects
     "RenderableObject",
     "Mesh",

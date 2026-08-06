@@ -221,5 +221,6 @@ pythreejs/
 # Scratch notebooks
 Untitled*.ipynb
 
-# Playwright harness cache (recorded esm.sh responses)
-tests/harness/.cache/
+
+# Node build tooling for the widget bundle
+node_modules/

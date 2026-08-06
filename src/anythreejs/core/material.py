@@ -20,6 +20,7 @@ __all__ = [
     "LineDashedMaterial",
     "SpriteMaterial",
     "LineMaterial",
+    "ShaderMaterial",
 ]
 
 Material = make_class("Material", ThreeJSBase)
@@ -34,3 +35,4 @@ LineDashedMaterial = make_class("LineDashedMaterial", LineBasicMaterial)
 # Sprite and fat-line materials are standalone (no side/depth fields).
 SpriteMaterial = make_class("SpriteMaterial", ThreeJSBase)
 LineMaterial = make_class("LineMaterial", ThreeJSBase)
+ShaderMaterial = make_class("ShaderMaterial", ThreeJSBase)

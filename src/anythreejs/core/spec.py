@@ -398,6 +398,22 @@ CATALOG: dict[str, dict] = {
             "resolution": {"default": None, "kind": "vector", "omit_none": True},
         },
     },
+    "ShaderMaterial": {
+        "category": "material",
+        "doc": "Material with custom GLSL shaders (uniforms must be "
+        "JSON-serializable; textures in uniforms are not supported yet).",
+        "fields": {
+            "uniforms": {"default": None, "omit_none": True},
+            "vertexShader": {"default": None, "omit_none": True},
+            "fragmentShader": {"default": None, "omit_none": True},
+            "transparent": {"default": False},
+            "opacity": {"default": 1.0},
+            "visible": {"default": True},
+            "side": {"default": "FrontSide", "kind": "side"},
+            "depthTest": {"default": True},
+            "depthWrite": {"default": True},
+        },
+    },
     # ------------------------------------------------------------------
     # Lights (Object3D-based: transforms come from the base class)
     # ------------------------------------------------------------------

@@ -149,6 +149,23 @@ scene.add(mesh)
 renderer
 ```
 
+## Development
+
+The browser side (`js/widget.js`) is bundled together with three.js into
+`src/anythreejs/static/widget.js`, so the widget makes **no network
+requests at runtime** — it works in air-gapped deployments and offline
+notebooks. After editing `js/widget.js`, rebuild the committed bundle:
+
+```bash
+npm install
+npm run build
+```
+
+Run the test suite with `uv run pytest tests/`. The browser-level tests
+additionally need `uv run playwright install chromium`; they load the
+shipped bundle in headless Chromium with the network disabled and assert
+on rendered pixels, GPU resource counts, and camera round-trips.
+
 ## Credits
 
 - Inspired by the original [pythreejs](https://github.com/jupyter-widgets/pythreejs)
