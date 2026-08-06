@@ -150,6 +150,11 @@ function typedArrayFor(dtype) {
   return Float32Array;
 }
 
+// Matches numpy dtype names ("float32", "uint8", ...) — NOT three.js type
+// names ("UnsignedByteType"). DataTexture specs carry a three.js `dtype`
+// AND a `data` key, which once made the whole spec look like a wrapper.
+const NUMPY_DTYPE = /^(?:float|u?int)(?:8|16|32|64)$/;
+
 function isBufferWrapper(node) {
   return (
     node !== null &&
@@ -157,7 +162,9 @@ function isBufferWrapper(node) {
     !Array.isArray(node) &&
     !ArrayBuffer.isView(node) &&
     typeof node.dtype === "string" &&
-    "data" in node
+    NUMPY_DTYPE.test(node.dtype) &&
+    "data" in node &&
+    !("type" in node)
   );
 }
 
@@ -829,8 +836,13 @@ class World {
   applySnapshot(preservePose) {
     const state = this.model.get("_scene_state") ?? {};
 
+    // Preserve the interactive pose only when the snapshot still uses the
+    // SAME camera — a replaced camera must adopt its own (Python-set) pose.
+    const sameCamera =
+      this.cameraUuid !== null && (state.camera ?? null) === this.cameraUuid;
+
     let pose = null;
-    if (preservePose && this.camera) {
+    if (preservePose && sameCamera && this.camera) {
       pose = {
         position: this.camera.position.clone(),
         rotation: this.camera.rotation.clone(),
@@ -1090,19 +1102,29 @@ class World {
   }
 
   applyBufferOp(uuid, attribute, value) {
-    const geometry = this.objects.get(uuid);
     const spec = this.specs.get(uuid);
-    if (!geometry || !geometry.isBufferGeometry || !spec) return;
+    if (!spec) return;
+
+    // Merge into the spec FIRST — unconditionally — so a later
+    // rebuildResource regenerates from current data even if the geometry
+    // isn't built yet or was serialized without an attributes dict.
+    if (attribute === "__index__") {
+      spec.index = value;
+    } else {
+      if (!spec.attributes) spec.attributes = {};
+      spec.attributes[attribute] = value;
+    }
+
+    const geometry = this.objects.get(uuid);
+    if (!geometry || !geometry.isBufferGeometry) return;
     const array = attributeArray(value);
     if (!array) return;
 
     if (attribute === "__index__") {
-      spec.index = value;
       geometry.setIndex(new THREE.BufferAttribute(array, 1));
       return;
     }
 
-    if (spec.attributes) spec.attributes[attribute] = value;
     const existing = geometry.getAttribute(attribute);
     if (
       existing &&

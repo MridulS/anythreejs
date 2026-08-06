@@ -172,6 +172,72 @@ def test_interactive_orbit_round_trip(harness, track_ops):
     harness.assert_clean()
 
 
+def test_data_texture_update_renders_correctly(harness, track_ops):
+    """Regression: a uint8 image update must still render as uint8 —
+    the float32 coercion bug turned updated textures white."""
+    red = np.zeros((8, 8, 4), dtype="uint8")
+    red[..., 0] = 255
+    red[..., 3] = 255
+    texture = p3.DataTexture(data=red)
+    plane = p3.Mesh(
+        geometry=p3.PlaneGeometry(4, 4),
+        material=p3.MeshBasicMaterial(map=texture),
+    )
+    scene = p3.Scene(children=[plane], background="#ffffff")
+    camera = p3.PerspectiveCamera(position=[0, 0, 2], aspect=200 / 150)
+    renderer = p3.Renderer(scene=scene, camera=camera)
+    sent = track_ops(renderer)
+    harness.boot(renderer)
+    assert_color(harness.pixel(0.5, 0.5), 255, 0, 0)
+
+    blue = np.zeros((8, 8, 4), dtype="uint8")
+    blue[..., 2] = 255
+    blue[..., 3] = 255
+    texture.data = blue
+    harness.apply(sent)
+
+    assert_color(harness.pixel(0.5, 0.5), 0, 0, 255)
+    harness.assert_clean()
+
+
+def test_camera_replacement_adopts_new_pose(harness):
+    """Regression: pose preservation across snapshot swaps must not apply
+    when the camera itself was replaced — the new camera's Python-set
+    position wins."""
+    renderer, mesh = box_fixture()
+    harness.boot(renderer)
+    harness.page.evaluate("window.harness.world.camera.position.set(2, 2, 2)")
+
+    renderer.camera = p3.PerspectiveCamera(position=[0, 0, 9], aspect=200 / 150)
+    summary = harness.set_scene_state(renderer)
+
+    assert summary["camera"]["position"] == pytest.approx([0, 0, 9])
+    harness.assert_clean()
+
+
+def test_late_attribute_survives_rebuild(harness, track_ops):
+    """Regression: an attribute added to a geometry serialized without any
+    attributes was applied in place but never merged into the JS-side spec,
+    so a later rebuild silently dropped it."""
+    geometry = p3.BufferGeometry()  # empty: snapshot spec has no attributes
+    points = p3.Points(geometry=geometry, material=p3.PointsMaterial(size=5))
+    scene = p3.Scene(children=[points])
+    renderer = p3.Renderer(scene=scene, camera=p3.PerspectiveCamera())
+    sent = track_ops(renderer)
+    harness.boot(renderer)
+
+    geometry.attributes["position"] = p3.BufferAttribute(
+        np.zeros((10, 3), dtype="float32")
+    )
+    harness.apply(sent)
+    assert harness.object(geometry.uuid)["attributes"]["position"]["length"] == 30
+
+    harness.page.evaluate(f"window.harness.world.rebuildResource('{geometry.uuid}')")
+    after = harness.object(geometry.uuid)
+    assert after["attributes"]["position"]["length"] == 30
+    harness.assert_clean()
+
+
 def test_scene_snapshot_swap_preserves_interactive_pose(harness):
     renderer, mesh = box_fixture(background="#ffffff")
     harness.boot(renderer)

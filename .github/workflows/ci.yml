@@ -42,9 +42,21 @@ jobs:
       - name: Install Chromium
         run: uv run playwright install --with-deps chromium
       # The harness serves the committed self-contained bundle with the
-      # browser forced offline — no network at runtime.
-      - name: Run browser tests
-        run: uv run pytest tests/test_browser.py -q
+      # browser forced offline — no network at runtime. Golden baselines are
+      # per-platform; on a runner without linux baselines the golden tests
+      # write them and skip — download the artifact and commit the PNGs to
+      # activate golden checks in CI.
+      - name: Run browser tests (functional, benchmarks, goldens)
+        run: >-
+          uv run pytest tests/test_browser.py tests/test_browser_perf.py
+          tests/test_golden.py -q -s
+      - name: Upload freshly written golden baselines
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-baselines-linux
+          path: tests/golden/*.linux.png
+          if-no-files-found: ignore
 
   plopp-drop-in:
     name: Drop-in gate (unmodified upstream plopp)

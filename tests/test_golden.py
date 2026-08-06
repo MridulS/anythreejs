@@ -2,19 +2,18 @@
 harness are compared full-frame against committed PNG baselines.
 
 These catch *our* rendering regressions (protocol, builders, three.js
-upgrades). They are deliberately tolerant — software WebGL output can
-differ slightly across platforms — so thresholds allow small numeric
-drift but fail on anything structural.
-
-To (re)generate baselines:  GOLDEN_UPDATE=1 uv run pytest tests/test_golden.py
-A missing baseline is written on first run and the test skips, so commit
-the PNGs it creates. If CI's Linux SwiftShader output diverges beyond
-tolerance from locally generated baselines, regenerate them from a CI
-artifact.
+upgrades). Baselines are per-platform (`<scene>.<platform>.png`): software
+WebGL output and — for the text scene — font rasterization differ between
+macOS and Linux, so each platform compares only against its own baselines.
+A missing baseline is written on first run and the test skips; commit the
+PNGs it creates (CI uploads freshly written Linux baselines as an
+artifact for promotion). To regenerate after an intentional rendering
+change:  GOLDEN_UPDATE=1 uv run pytest tests/test_golden.py
 """
 
 import base64
 import os
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -26,6 +25,7 @@ Image = pytest.importorskip("PIL.Image")
 import anythreejs as p3  # noqa: E402
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
+PLATFORM = {"darwin": "darwin", "win32": "windows"}.get(sys.platform, "linux")
 
 MEAN_DIFF_LIMIT = 8.0  # mean absolute channel difference (0-255)
 HOT_PIXEL_LIMIT = 0.02  # fraction of pixels allowed to differ by > 30
@@ -135,7 +135,7 @@ def test_golden(harness, name):
     frame = frame_array(harness.screenshot())
     harness.assert_clean()
 
-    path = GOLDEN_DIR / f"{name}.png"
+    path = GOLDEN_DIR / f"{name}.{PLATFORM}.png"
     if os.environ.get("GOLDEN_UPDATE") or not path.exists():
         GOLDEN_DIR.mkdir(exist_ok=True)
         Image.fromarray(frame.astype(np.uint8)).save(path)

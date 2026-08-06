@@ -132,5 +132,7 @@ def test_orbit_fps(harness):
         fps=f"{result['fps']:.0f}",
         frames=result["frames"],
     )
-    assert result["fps"] >= 5  # SwiftShader floor; real GPUs are far higher
+    # Floor set for 2-vCPU CI runners on SwiftShader; real GPUs are far
+    # higher. This only catches catastrophic regressions by design.
+    assert result["fps"] >= 2
     harness.assert_clean()

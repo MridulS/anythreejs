@@ -208,6 +208,43 @@ def test_get_state_folds_delta_ops_into_snapshot(track_ops):
     assert len(sent) == 1  # the lazy refresh emitted nothing new
 
 
+def test_data_texture_update_preserves_dtype(track_ops):
+    """Regression: _json_safe once forced every ndarray to float32, turning
+    uint8 image updates into blown-out float textures on the JS side."""
+    image = np.zeros((4, 4, 4), dtype="uint8")
+    texture = p3.DataTexture(data=image)
+    mesh = p3.Mesh(
+        geometry=p3.PlaneGeometry(), material=p3.MeshBasicMaterial(map=texture)
+    )
+    renderer = p3.Renderer(
+        scene=p3.Scene(children=[mesh]), camera=p3.PerspectiveCamera()
+    )
+    sent = track_ops(renderer)
+
+    texture.data = np.full((4, 4, 4), 255, dtype="uint8")
+
+    op = ops_of(sent[0])[0]
+    assert op["props"]["data"]["dtype"] == "uint8"
+    # 64-bit floats still narrow to what WebGL can hold.
+    texture.data = np.zeros((4, 4, 4), dtype="float64")
+    assert ops_of(sent[1])[0]["props"]["data"]["dtype"] == "float32"
+
+
+def test_closed_renderer_detaches_and_stops_emitting(track_ops):
+    """Regression: attached objects kept dead renderers alive and kept
+    emitting ops through their closed comms."""
+    material = p3.MeshBasicMaterial()
+    scene = p3.Scene(children=[p3.Mesh(p3.BoxGeometry(), material)])
+    renderer = p3.Renderer(scene=scene, camera=p3.PerspectiveCamera())
+    sent = track_ops(renderer)
+
+    renderer.close()
+
+    assert material._renderers == set()
+    material.color = "#123456"
+    assert sent == []
+
+
 def test_scene_replacement_refreshes_snapshot(track_ops):
     renderer = p3.Renderer(scene=p3.Scene(), camera=p3.PerspectiveCamera())
     track_ops(renderer)

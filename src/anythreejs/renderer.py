@@ -34,7 +34,7 @@ import traitlets
 
 from .core import Scene
 from .core.base import ThreeJSBase
-from .core.buffer import BufferAttribute, binary_wrapper
+from .core.buffer import BufferAttribute, _infer_dtype, binary_wrapper
 from .core.geometry import _serialize_attribute
 
 
@@ -52,9 +52,12 @@ def _extract_buffers(node, buffers: list):
 
 
 def _json_safe(value):
-    """Coerce a property value into a JSON/buffer-transportable form."""
+    """Coerce a property value into a JSON/buffer-transportable form.
+
+    Arrays keep their own dtype (narrowed to a WebGL-representable width) —
+    forcing float32 here once corrupted uint8 DataTexture image updates."""
     if isinstance(value, np.ndarray):
-        return binary_wrapper(value, dtype="float32")
+        return binary_wrapper(value, dtype=_infer_dtype(value))
     if isinstance(value, np.generic):
         return value.item()
     if isinstance(value, (list, tuple)):
@@ -274,6 +277,16 @@ class Renderer(anywidget.AnyWidget):
     # Backwards-compatible alias (objects used to call this on any change).
     def _request_render(self):
         self._full_resync()
+
+    def close(self):
+        """Detach from the object graph before closing the widget, so
+        reused objects stop holding (and emitting through) this renderer."""
+        for obj in list(self._objects.values()):
+            obj._renderers.discard(self)
+        self._objects.clear()
+        self._known.clear()
+        self._pending_ops = []
+        super().close()
 
     def render(self, scene=None, camera=None):
         """Force a full resync. For compatibility - rendering is automatic."""
