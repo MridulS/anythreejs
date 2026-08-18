@@ -1148,15 +1148,37 @@ class World {
       geometry.computeBoundingSphere();
       if (!spec.attributes?.normal) geometry.computeVertexNormals();
     }
+    if (attribute === "position" || attribute === "__index__") {
+      this.rebuildDependents(uuid, new Set([uuid]));
+    }
+  }
+
+  /** Rebuild EdgesGeometry entries derived from a changed source
+   * geometry (edges depend on positions/index, so color-only updates
+   * never reach here). */
+  rebuildDependents(uuid, seen) {
+    for (const [id, spec] of this.specs) {
+      if (
+        spec.type === "EdgesGeometry" &&
+        spec.geometry === uuid &&
+        !seen.has(id)
+      ) {
+        this.rebuildResource(id, seen);
+      }
+    }
   }
 
   /** Rebuild a geometry/material/texture in place: build a fresh object
    * from the (already merged) spec and swap it on everything that
-   * references the old one, then dispose the old one. */
-  rebuildResource(uuid) {
+   * references the old one, then dispose the old one. Derived
+   * EdgesGeometry entries rebuild along with their source (`seen` guards
+   * against pathological cycles). */
+  rebuildResource(uuid, seen = new Set()) {
+    seen.add(uuid);
     const old = this.objects.get(uuid);
     this.objects.delete(uuid);
     const fresh = this.ensure(uuid);
+    this.rebuildDependents(uuid, seen);
     if (!old || !fresh) return;
     for (const [, node] of this.objects) {
       if (node.isObject3D) {

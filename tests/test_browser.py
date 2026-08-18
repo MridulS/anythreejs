@@ -238,6 +238,38 @@ def test_late_attribute_survives_rebuild(harness, track_ops):
     harness.assert_clean()
 
 
+def test_edges_follow_source_geometry(harness, track_ops):
+    """EdgesGeometry entries rebuild when their source geometry's
+    positions change (previously a documented limitation: edges froze at
+    their construction-time shape)."""
+    positions = p3.BufferAttribute(
+        np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype="float32")
+    )
+    geometry = p3.BufferGeometry(
+        attributes={"position": positions},
+        index=p3.BufferAttribute(np.array([0, 1, 2], dtype="uint32"), itemSize=1),
+    )
+    mesh = p3.Mesh(geometry=geometry, material=p3.MeshBasicMaterial())
+    edges = p3.LineSegments(
+        geometry=p3.EdgesGeometry(geometry),
+        material=p3.LineBasicMaterial(color="#000000"),
+    )
+    scene = p3.Scene(children=[mesh, edges])
+    renderer = p3.Renderer(scene=scene, camera=p3.PerspectiveCamera())
+    sent = track_ops(renderer)
+    harness.boot(renderer)
+
+    edges_uuid = edges.geometry.uuid
+    assert harness.object(edges_uuid)["boundingSphereRadius"] < 2
+
+    positions.array = np.array([[0, 0, 0], [10, 0, 0], [0, 10, 0]], dtype="float32")
+    harness.apply(sent)
+
+    # The derived edges rebuilt from the moved source geometry.
+    assert harness.object(edges_uuid)["boundingSphereRadius"] > 4
+    harness.assert_clean()
+
+
 def test_scene_snapshot_swap_preserves_interactive_pose(harness):
     renderer, mesh = box_fixture(background="#ffffff")
     harness.boot(renderer)

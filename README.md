@@ -166,6 +166,22 @@ additionally need `uv run playwright install chromium`; they load the
 shipped bundle in headless Chromium with the network disabled and assert
 on rendered pixels, GPU resource counts, and camera round-trips.
 
+Type stubs for the catalog-generated classes are committed
+(`src/anythreejs/core/*.pyi`); regenerate them after changing the catalog:
+
+```bash
+uv run python scripts/generate_stubs.py
+```
+
+## Known limitations
+
+- **One parent per object in the browser.** Python lets you `add()` the
+  same object under two parents, but three.js reparents silently — it
+  renders only under the last parent added (the same constraint the
+  original pythreejs had).
+- **ShaderMaterial uniforms must be JSON-serializable** — texture-valued
+  uniforms are not supported yet.
+
 ## Credits
 
 - Inspired by the original [pythreejs](https://github.com/jupyter-widgets/pythreejs)

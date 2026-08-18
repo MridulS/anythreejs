@@ -26,6 +26,10 @@ jobs:
           npm ci
           npm run build
           git diff --exit-code src/anythreejs/static/widget.js
+      - name: Verify committed type stubs are current
+        run: |
+          uv run python scripts/generate_stubs.py
+          git diff --exit-code 'src/anythreejs/core/*.pyi'
       - name: Run tests (browser tests skip without a browser)
         run: uv run pytest tests/ -q
 
@@ -80,6 +84,25 @@ jobs:
           upstream-plopp/tests/plotting/scatter3d_test.py
           upstream-plopp/tests/plotting/mesh3d_test.py
           -q -W "ignore::PendingDeprecationWarning"
+
+  matplotgl:
+    name: matplotgl compatibility gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Sync environment
+        run: uv sync --group dev
+      - name: Fetch matplotgl (ported to anythreejs upstream)
+        run: git clone --depth 1 https://github.com/scipp/matplotgl external/matplotgl
+      - name: Install matplotgl
+        run: uv pip install -e ./external/matplotgl
+      - name: Integration tests
+        run: uv run --no-sync pytest tests/test_matplotgl_compat.py -q
+      - name: matplotgl's own test suite
+        run: uv run --no-sync pytest external/matplotgl/tests -q
 
   plopp:
     name: plopp compatibility gate

@@ -14,6 +14,21 @@ from .base import ThreeJSBase
 from .buffer import binary_wrapper
 from .spec import make_class
 
+__all__ = [
+    "BufferGeometry",
+    "BoxGeometry",
+    "BoxBufferGeometry",
+    "SphereGeometry",
+    "SphereBufferGeometry",
+    "PlaneGeometry",
+    "PlaneBufferGeometry",
+    "CylinderGeometry",
+    "CylinderBufferGeometry",
+    "TorusGeometry",
+    "EdgesGeometry",
+    "LineGeometry",
+]
+
 
 class _AttributesDict(dict):
     """Dict that notifies its geometry when an attribute's data changes,
