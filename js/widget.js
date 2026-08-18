@@ -487,8 +487,8 @@ function buildMaterial(spec, world) {
       return mat;
     }
 
-    case "MeshStandardMaterial":
-      return new THREE.MeshStandardMaterial({
+    case "MeshStandardMaterial": {
+      const mat = new THREE.MeshStandardMaterial({
         ...baseProps,
         roughness: spec.roughness ?? 0.5,
         metalness: spec.metalness ?? 0.5,
@@ -498,9 +498,15 @@ function buildMaterial(spec, world) {
         emissive: colorOf(spec.emissive, "#000000"),
         emissiveIntensity: spec.emissiveIntensity ?? 1.0,
       });
+      if (map) {
+        mat.map = map;
+        mat.needsUpdate = true;
+      }
+      return mat;
+    }
 
-    case "MeshPhongMaterial":
-      return new THREE.MeshPhongMaterial({
+    case "MeshPhongMaterial": {
+      const mat = new THREE.MeshPhongMaterial({
         ...baseProps,
         shininess: spec.shininess ?? 30,
         specular: colorOf(spec.specular, "#111111"),
@@ -508,44 +514,48 @@ function buildMaterial(spec, world) {
         flatShading: spec.flatShading ?? false,
         vertexColors: parseVertexColors(spec.vertexColors),
       });
+      if (map) {
+        mat.map = map;
+        mat.needsUpdate = true;
+      }
+      return mat;
+    }
 
-    case "MeshLambertMaterial":
-      return new THREE.MeshLambertMaterial({
+    case "MeshLambertMaterial": {
+      const mat = new THREE.MeshLambertMaterial({
         ...baseProps,
         wireframe: spec.wireframe ?? false,
         vertexColors: parseVertexColors(spec.vertexColors),
       });
+      if (map) {
+        mat.map = map;
+        mat.needsUpdate = true;
+      }
+      return mat;
+    }
 
     case "PointsMaterial":
       return new THREE.PointsMaterial({
-        color: colorOf(spec.color),
+        ...baseProps,
         size: spec.size ?? 1,
         sizeAttenuation: spec.sizeAttenuation ?? true,
         vertexColors: parseVertexColors(spec.vertexColors),
-        opacity: spec.opacity ?? 1,
-        transparent: spec.transparent ?? false,
-        depthTest: spec.depthTest ?? true,
-        depthWrite: spec.depthWrite ?? true,
       });
 
     case "LineBasicMaterial":
       return new THREE.LineBasicMaterial({
-        color: colorOf(spec.color),
+        ...baseProps,
         linewidth: spec.linewidth ?? 1,
         vertexColors: parseVertexColors(spec.vertexColors),
-        opacity: spec.opacity ?? 1,
-        transparent: spec.transparent ?? false,
       });
 
     case "LineDashedMaterial":
       return new THREE.LineDashedMaterial({
-        color: colorOf(spec.color),
+        ...baseProps,
         linewidth: spec.linewidth ?? 1,
         dashSize: spec.dashSize ?? 3,
         gapSize: spec.gapSize ?? 1,
         vertexColors: parseVertexColors(spec.vertexColors),
-        opacity: spec.opacity ?? 1,
-        transparent: spec.transparent ?? false,
       });
 
     case "SpriteMaterial": {
@@ -695,7 +705,13 @@ function buildSceneNode(spec, world) {
     case "DirectionalLight":
       obj = new THREE.DirectionalLight(colorOf(spec.color), spec.intensity ?? 1);
       obj.castShadow = spec.castShadow ?? false;
-      if (spec.target) obj.target.position.set(...spec.target);
+      if (spec.target) {
+        obj.target.position.set(...spec.target);
+        // The target is not in the scene graph, so its matrixWorld (which
+        // three.js derives the light direction from) must be updated by
+        // hand or the target is silently ignored.
+        obj.target.updateMatrixWorld(true);
+      }
       break;
 
     case "PointLight":
@@ -726,7 +742,10 @@ function buildSceneNode(spec, world) {
         spec.decay ?? 2
       );
       obj.castShadow = spec.castShadow ?? false;
-      if (spec.target) obj.target.position.set(...spec.target);
+      if (spec.target) {
+        obj.target.position.set(...spec.target);
+        obj.target.updateMatrixWorld(true); // see DirectionalLight
+      }
       break;
 
     case "GridHelper":
@@ -840,6 +859,7 @@ class World {
     // SAME camera — a replaced camera must adopt its own (Python-set) pose.
     const sameCamera =
       this.cameraUuid !== null && (state.camera ?? null) === this.cameraUuid;
+    const previousControlsUuid = this.controlSpecs[0]?.uuid ?? null;
 
     let pose = null;
     if (preservePose && sameCamera && this.camera) {
@@ -880,13 +900,25 @@ class World {
     // etc. keep working).
     if (this.camera.parent === null) this.scene.add(this.camera);
 
+    // Replaced controls must adopt their own spec target: the interactive
+    // target latch only carries across a resync when the controls object
+    // (and camera) survived it.
+    const sameControls =
+      previousControlsUuid !== null &&
+      (this.controlSpecs[0]?.uuid ?? null) === previousControlsUuid;
+
     if (pose) {
       this.camera.position.copy(pose.position);
       this.camera.rotation.copy(pose.rotation);
       this.camera.zoom = pose.zoom;
       this.camera.updateProjectionMatrix?.();
-      this.controlsTarget.copy(pose.target);
-      this.hasControlsTarget = pose.hasTarget;
+      if (sameControls) {
+        this.controlsTarget.copy(pose.target);
+        this.hasControlsTarget = pose.hasTarget;
+      }
+    }
+    if (!sameCamera || !sameControls) {
+      this.hasControlsTarget = false;
     }
 
     this.refreshLineResolutions();
@@ -1052,7 +1084,11 @@ class World {
           if (obj.isScene) obj.background = value ? colorOf(value) : null;
           break;
         case "geometry": {
-          const geometry = value ? this.ensure(value) : null;
+          // null clears to an empty geometry (matching how buildSceneNode
+          // treats a mesh serialized without one).
+          const geometry = value
+            ? this.ensure(value)
+            : new THREE.BufferGeometry();
           if (geometry) {
             obj.geometry = geometry;
             if (obj.isLine2) obj.computeLineDistances();
@@ -1060,7 +1096,9 @@ class World {
           break;
         }
         case "material": {
-          const material = value ? this.ensure(value) : null;
+          const material = value
+            ? this.ensure(value)
+            : new THREE.MeshBasicMaterial();
           if (material) obj.material = material;
           break;
         }
@@ -1076,6 +1114,7 @@ class World {
         case "target":
           if (obj.target?.position && Array.isArray(value)) {
             obj.target.position.set(...value);
+            obj.target.updateMatrixWorld(true); // detached target: see build
           }
           break;
         case "lookAt":

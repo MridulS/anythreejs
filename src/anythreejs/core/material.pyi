@@ -47,6 +47,7 @@ class MeshStandardMaterial(Material):
     vertexColors: bool | str
     emissive: str
     emissiveIntensity: float
+    map: Any
     def __init__(
         self,
         roughness: float = ...,
@@ -56,6 +57,7 @@ class MeshStandardMaterial(Material):
         vertexColors: bool | str = ...,
         emissive: str = ...,
         emissiveIntensity: float = ...,
+        map: Any = ...,
         **kwargs: Any,
     ) -> None: ...
 
@@ -65,6 +67,7 @@ class MeshPhongMaterial(Material):
     wireframe: bool
     flatShading: bool
     vertexColors: bool | str
+    map: Any
     def __init__(
         self,
         shininess: float = ...,
@@ -72,14 +75,20 @@ class MeshPhongMaterial(Material):
         wireframe: bool = ...,
         flatShading: bool = ...,
         vertexColors: bool | str = ...,
+        map: Any = ...,
         **kwargs: Any,
     ) -> None: ...
 
 class MeshLambertMaterial(Material):
     wireframe: bool
     vertexColors: bool | str
+    map: Any
     def __init__(
-        self, wireframe: bool = ..., vertexColors: bool | str = ..., **kwargs: Any
+        self,
+        wireframe: bool = ...,
+        vertexColors: bool | str = ...,
+        map: Any = ...,
+        **kwargs: Any,
     ) -> None: ...
 
 class PointsMaterial(Material):

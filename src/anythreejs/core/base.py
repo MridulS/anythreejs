@@ -276,7 +276,9 @@ class Object3D(ThreeJSBase):
 
     @property
     def children(self) -> list:
-        return self._children
+        # A copy: in-place mutation would bypass renderer attachment and
+        # delta emission. Use add()/remove().
+        return list(self._children)
 
     def _flatten(self, objects) -> list["Object3D"]:
         flat = []

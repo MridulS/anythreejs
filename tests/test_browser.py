@@ -238,6 +238,117 @@ def test_late_attribute_survives_rebuild(harness, track_ops):
     harness.assert_clean()
 
 
+def test_directional_light_target_aims_the_light(harness):
+    """Regression: the light's target Object3D is not in the scene graph,
+    so without a manual matrixWorld update three.js silently ignored any
+    non-origin target and always aimed the light at the origin."""
+
+    def lit_plane(target):
+        plane = p3.Mesh(
+            geometry=p3.PlaneGeometry(2, 2),
+            material=p3.MeshLambertMaterial(color="#ffffff"),
+        )
+        scene = p3.Scene(
+            children=[
+                plane,
+                p3.DirectionalLight(position=[0, 0, 5], intensity=3, target=target),
+            ],
+            background="#000000",
+        )
+        camera = p3.PerspectiveCamera(position=[0, 0, 3], aspect=200 / 150)
+        return p3.Renderer(scene=scene, camera=camera)
+
+    harness.boot(lit_plane([0, 0, 0]))
+    head_on = harness.pixel(0.5, 0.5)[0]
+
+    harness.boot(lit_plane([50, 0, 0]))  # aimed far sideways: grazing light
+    grazing = harness.pixel(0.5, 0.5)[0]
+
+    # Before the fix both rendered identically (target ignored). sRGB
+    # encoding lifts the grazing value, so the contract is the contrast.
+    assert head_on > 150, (head_on, grazing)
+    assert head_on - grazing > 100, (head_on, grazing)
+    harness.assert_clean()
+
+
+def test_point_line_materials_honor_base_props_at_build(harness):
+    """Regression: buildMaterial dropped visible/side/depthTest/depthWrite
+    for Points/LineBasic/LineDashed materials, so construction-time state
+    (and any live state, after a resync) fell back to three.js defaults."""
+    line_material = p3.LineBasicMaterial(depthTest=False, visible=False)
+    points_material = p3.PointsMaterial(size=3, visible=False)
+    positions = p3.BufferAttribute(np.zeros((2, 3), dtype="float32"))
+    scene = p3.Scene(
+        children=[
+            p3.Line(
+                geometry=p3.BufferGeometry(attributes={"position": positions}),
+                material=line_material,
+            ),
+            p3.Points(
+                geometry=p3.BufferGeometry(attributes={"position": positions}),
+                material=points_material,
+            ),
+        ]
+    )
+    renderer = p3.Renderer(scene=scene, camera=p3.PerspectiveCamera())
+    harness.boot(renderer)
+
+    built_line = harness.object(line_material.uuid)
+    assert built_line["depthTest"] is False
+    assert built_line["visible"] is False
+    assert harness.object(points_material.uuid)["visible"] is False
+    harness.assert_clean()
+
+
+def test_lit_material_texture_map_builds(harness):
+    """map= on MeshStandardMaterial must reach the built three.js
+    material (was dropped at both the catalog and buildMaterial layers)."""
+    image = np.full((4, 4, 4), 255, dtype="uint8")
+    material = p3.MeshStandardMaterial(map=p3.DataTexture(data=image))
+    scene = p3.Scene(children=[p3.Mesh(geometry=p3.BoxGeometry(), material=material)])
+    renderer = p3.Renderer(scene=scene, camera=p3.PerspectiveCamera())
+    harness.boot(renderer)
+
+    assert harness.object(material.uuid)["hasMap"] is True
+    harness.assert_clean()
+
+
+def test_clearing_geometry_clears_pixels(harness, track_ops):
+    """mesh.geometry = None must actually empty the mesh in the browser
+    (the null update was once silently ignored)."""
+    renderer, mesh = box_fixture()
+    sent = track_ops(renderer)
+    harness.boot(renderer)
+    assert_color(harness.pixel(0.5, 0.5), 255, 0, 0)
+
+    mesh.geometry = None
+    harness.apply(sent)
+
+    assert_color(harness.pixel(0.5, 0.5), 255, 255, 255)  # background
+    harness.assert_clean()
+
+
+def test_controls_replacement_adopts_spec_target(harness):
+    """Regression: the interactive controls-target latch survived full
+    resyncs, so a NEW controls object's Python-set target was ignored and
+    then clobbered back by the next sync."""
+    renderer, mesh = box_fixture()
+    harness.boot(renderer)
+    # Simulate an interactive target the Python side doesn't know about.
+    harness.page.evaluate("window.harness.world.controlsTarget.set(9, 9, 9)")
+
+    renderer.controls = [
+        p3.OrbitControls(controlling=renderer.camera, target=(10, 0, 0))
+    ]
+    harness.set_scene_state(renderer)
+
+    target = harness.page.evaluate(
+        "[...window.harness.world.views][0].controls.target.toArray()"
+    )
+    assert target == pytest.approx([10, 0, 0])
+    harness.assert_clean()
+
+
 def test_edges_follow_source_geometry(harness, track_ops):
     """EdgesGeometry entries rebuild when their source geometry's
     positions change (previously a documented limitation: edges froze at

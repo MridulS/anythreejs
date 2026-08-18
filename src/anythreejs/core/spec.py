@@ -30,6 +30,7 @@ The category on each class ("geometry", "material", "light", "helper",
 
 import copy
 import inspect
+import sys
 from typing import Any, Iterator
 
 from .base import ThreeJSBase
@@ -107,13 +108,19 @@ class Prop:
         if self.kind == "side":
             return SIDE_MAP.get(value, value)
         if self.kind == "color":
-            if isinstance(value, str) and not (
-                value.startswith("#") or value.isalpha()
-            ):
-                raise ValueError(
-                    f"Invalid color format: {value}. "
-                    "Expected hex color (#RRGGBB) or color name"
+            if isinstance(value, str):
+                accepted = (
+                    value.startswith("#")
+                    or value.isalpha()
+                    or value.strip()
+                    .lower()
+                    .startswith(("rgb(", "rgba(", "hsl(", "hsla("))
                 )
+                if not accepted:
+                    raise ValueError(
+                        f"Invalid color format: {value}. Expected a hex color "
+                        "(#RRGGBB), color name, or rgb()/hsl() string"
+                    )
             return value
         return value
 
@@ -154,6 +161,7 @@ def make_class(name: str, base: type, extra_namespace: dict = None) -> type:
     """Generate a class from its CATALOG entry."""
     entry = CATALOG[name]
     fields: dict[str, dict] = entry["fields"]
+    aliases: dict[str, str] = entry.get("aliases", {})
     order = list(fields)
     props = {fname: Prop(field) for fname, field in fields.items()}
     ref_fields = [
@@ -161,6 +169,9 @@ def make_class(name: str, base: type, extra_namespace: dict = None) -> type:
     ]
 
     def __init__(self, *args, **kwargs):
+        for alias, target in aliases.items():
+            if alias in kwargs and target not in kwargs:
+                kwargs[target] = kwargs.pop(alias)
         if len(args) > len(order):
             raise TypeError(
                 f"{name}() takes at most {len(order)} positional arguments, "
@@ -193,9 +204,14 @@ def make_class(name: str, base: type, extra_namespace: dict = None) -> type:
             if isinstance(value, ThreeJSBase):
                 yield value
 
+    # Attribute the class to its defining module (material.py, lights.py,
+    # ...) rather than this factory, so pickling and repr work.
+    caller_module = sys._getframe(1).f_globals.get("__name__", __name__)
     namespace = {
         "_type": name,
         "__doc__": entry.get("doc", ""),
+        "__module__": caller_module,
+        "__qualname__": name,
         "__init__": __init__,
         "to_dict": to_dict,
         **props,
@@ -326,6 +342,7 @@ CATALOG: dict[str, dict] = {
             "vertexColors": {"default": False},
             "emissive": {"default": "#000000", "kind": "css"},
             "emissiveIntensity": {"default": 1.0},
+            "map": {"default": None, "kind": "ref"},
         },
     },
     "MeshPhongMaterial": {
@@ -337,6 +354,7 @@ CATALOG: dict[str, dict] = {
             "wireframe": {"default": False},
             "flatShading": {"default": False},
             "vertexColors": {"default": False},
+            "map": {"default": None, "kind": "ref"},
         },
     },
     "MeshLambertMaterial": {
@@ -345,6 +363,7 @@ CATALOG: dict[str, dict] = {
         "fields": {
             "wireframe": {"default": False},
             "vertexColors": {"default": False},
+            "map": {"default": None, "kind": "ref"},
         },
     },
     "PointsMaterial": {
@@ -449,6 +468,8 @@ CATALOG: dict[str, dict] = {
     "HemisphereLight": {
         "category": "light",
         "doc": "Hemisphere light (sky and ground colors).",
+        # pythreejs names the first parameter `color`.
+        "aliases": {"color": "skyColor"},
         "fields": {
             "skyColor": {"default": "#ffffff", "kind": "css"},
             "groundColor": {"default": "#444444", "kind": "css"},

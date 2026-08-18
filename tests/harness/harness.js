@@ -248,6 +248,10 @@ const harness = {
       out.colorHex = obj.color ? obj.color.getHexString() : null;
       out.opacity = obj.opacity;
       out.transparent = obj.transparent;
+      out.visible = obj.visible;
+      out.depthTest = obj.depthTest;
+      out.depthWrite = obj.depthWrite;
+      out.hasMap = !!obj.map;
     }
     if (obj.isObject3D) {
       out.position = obj.position.toArray();

@@ -138,8 +138,13 @@ class Renderer(anywidget.AnyWidget):
         self._camera_epoch = 0
         self._batch_depth = 0
         self._pending_ops: list[dict] = []
-        self._applying_remote = False
+        # (uuid, prop) pairs currently being applied FROM JS: exactly these
+        # are suppressed from re-emission. A blanket flag here once
+        # swallowed scene mutations made by user observers reacting to
+        # picker/camera events — permanently desyncing Python and JS.
+        self._remote_props: set = set()
         self._snapshot_dirty = False
+        self._resync_seq = 0
 
         super().__init__(
             width=int(width),
@@ -201,7 +206,9 @@ class Renderer(anywidget.AnyWidget):
 
     @property
     def controls(self) -> list:
-        return self._controls
+        # A copy: in-place mutation would bypass attachment and resync.
+        # Assign a new list instead.
+        return list(self._controls)
 
     @controls.setter
     def controls(self, value: list):
@@ -232,6 +239,10 @@ class Renderer(anywidget.AnyWidget):
         return {
             "version": 2,
             "epoch": self._epoch,
+            # Bumped on explicit resyncs so the trait never compares equal
+            # to a quietly injected get_state() snapshot (traitlets would
+            # otherwise treat render() as a silent no-op).
+            "resync": self._resync_seq,
             "objects": specs,
             "scene": self._scene.uuid if self._scene else None,
             "camera": self._camera.uuid if self._camera else None,
@@ -241,6 +252,7 @@ class Renderer(anywidget.AnyWidget):
     def _refresh_snapshot(self):
         """Write a fresh snapshot into the ``_scene_state`` trait (synced to
         JS, which rebuilds its world) and reset the known-uuid set."""
+        self._resync_seq += 1
         self._snapshot_dirty = False
         for root in self._iter_roots():
             root._attach_renderer(self)
@@ -375,7 +387,7 @@ class Renderer(anywidget.AnyWidget):
     # ------------------------------------------------------------------
 
     def _on_children_added(self, parent: ThreeJSBase, children: list):
-        if self._applying_remote or parent.uuid not in self._known:
+        if parent.uuid not in self._known:
             return
         self._begin_batch()
         try:
@@ -388,7 +400,7 @@ class Renderer(anywidget.AnyWidget):
             self._end_batch()
 
     def _on_children_removed(self, parent: ThreeJSBase, children: list):
-        if self._applying_remote or parent.uuid not in self._known:
+        if parent.uuid not in self._known:
             return
         self._begin_batch()
         try:
@@ -401,8 +413,8 @@ class Renderer(anywidget.AnyWidget):
             self._end_batch()
 
     def _on_object_change(self, obj: ThreeJSBase, name: str, old, new):
-        if self._applying_remote:
-            return
+        if (obj.uuid, name) in self._remote_props:
+            return  # echo of a value JS just told us about
         if obj.uuid not in self._known:
             return
         if name == "children":
@@ -454,13 +466,22 @@ class Renderer(anywidget.AnyWidget):
             self._queue({"op": "update", "uuid": obj.uuid, "props": props})
             return
 
-        if isinstance(new, ThreeJSBase):
-            # Reference assignment (geometry=, material=, map=, ...).
+        if isinstance(new, ThreeJSBase) or (
+            new is None and isinstance(old, ThreeJSBase)
+        ):
+            # Reference assignment (geometry=, material=, map=, ...),
+            # including clearing it: GC must run either way so the old
+            # resource is detached and disposed.
             self._begin_batch()
             try:
-                self._ensure_created(new)
+                if new is not None:
+                    self._ensure_created(new)
                 self._queue(
-                    {"op": "update", "uuid": obj.uuid, "props": {name: new.uuid}}
+                    {
+                        "op": "update",
+                        "uuid": obj.uuid,
+                        "props": {name: new.uuid if new is not None else None},
+                    }
                 )
                 self._gc()
             finally:
@@ -499,9 +520,19 @@ class Renderer(anywidget.AnyWidget):
         if data.get("epoch", 0) < self._camera_epoch:
             return  # stale: raced with a Python-originated camera update
 
-        self._applying_remote = True
+        camera = self._camera
+        pairs = set()
+        if camera is not None:
+            pairs.update(
+                (camera.uuid, prop) for prop in ("position", "rotation", "zoom")
+            )
+        pairs.update(
+            (ctrl.uuid, "target")
+            for ctrl in self._controls
+            if ctrl._type in ("OrbitControls", "TrackballControls")
+        )
+        self._remote_props = pairs
         try:
-            camera = self._camera
             if camera is not None:
                 with camera.hold_trait_notifications():
                     if "position" in data:
@@ -515,7 +546,7 @@ class Renderer(anywidget.AnyWidget):
                     if ctrl._type in ("OrbitControls", "TrackballControls"):
                         ctrl.target = data["target"]
         finally:
-            self._applying_remote = False
+            self._remote_props = set()
 
     def _on_picker_event(self, change):
         """Handle picker events from JavaScript."""
@@ -529,7 +560,16 @@ class Renderer(anywidget.AnyWidget):
 
         for ctrl in self._controls:
             if ctrl._type == "Picker" and ctrl.uuid == picker_uuid:
-                self._applying_remote = True
+                self._remote_props = {
+                    (ctrl.uuid, prop)
+                    for prop in (
+                        "point",
+                        "distance",
+                        "faceIndex",
+                        "modifiers",
+                        "object",
+                    )
+                }
                 try:
                     with ctrl.hold_trait_notifications():
                         if "point" in event_data:
@@ -544,5 +584,5 @@ class Renderer(anywidget.AnyWidget):
                         if "object_uuid" in event_data:
                             ctrl.object = self._objects.get(event_data["object_uuid"])
                 finally:
-                    self._applying_remote = False
+                    self._remote_props = set()
                 break

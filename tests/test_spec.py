@@ -74,6 +74,61 @@ def test_vector_fields_expose_tuples_and_serialize_lists():
     assert controls.to_dict()["target"] == [1, 2, 3]
 
 
+def test_css_color_forms_accepted():
+    """Regression: pythreejs (via the ipywidgets Color trait) accepts
+    rgb()/rgba()/hsl() strings and THREE.Color parses them; the catalog's
+    color validation once rejected them at construction time."""
+    material = p3.MeshBasicMaterial(color="rgb(100,100,100)")
+    assert material.color == "rgb(100,100,100)"
+    material.color = "hsl(120, 50%, 50%)"
+    material.color = "rgba(10, 20, 30, 0.5)"
+    with pytest.raises(ValueError):
+        material.color = "not a color!"
+
+
+def test_lit_materials_own_their_texture_maps():
+    """Regression: map= on Standard/Phong/Lambert was silently dropped
+    with only an unknown-kwargs warning."""
+    import warnings
+
+    import numpy as np
+
+    for cls in (
+        p3.MeshStandardMaterial,
+        p3.MeshPhongMaterial,
+        p3.MeshLambertMaterial,
+    ):
+        texture = p3.DataTexture(data=np.zeros((2, 2, 4), dtype="uint8"))
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            material = cls(map=texture)
+        assert material.map is texture
+        assert material.to_dict(flat=True)["map"] == texture.uuid
+        assert texture in list(material._owned_objects())
+
+
+def test_hemisphere_light_accepts_pythreejs_color_kwarg():
+    """pythreejs names HemisphereLight's first parameter `color`."""
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        light = p3.HemisphereLight(color="#123456")
+    assert light.skyColor == "#123456"
+
+
+def test_generated_classes_are_picklable():
+    """Regression: generated classes claimed __module__ ==
+    anythreejs.core.spec, where pickle could not find them."""
+    import pickle
+
+    material = p3.MeshStandardMaterial(roughness=0.3)
+    assert type(material).__module__ == "anythreejs.core.material"
+    clone = pickle.loads(pickle.dumps(material))
+    assert type(clone) is p3.MeshStandardMaterial
+    assert clone.roughness == 0.3
+
+
 def test_shader_material_matplotgl_style():
     """matplotgl builds scatter markers with custom shaders."""
     material = p3.ShaderMaterial(

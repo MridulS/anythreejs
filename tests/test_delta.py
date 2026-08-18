@@ -208,6 +208,42 @@ def test_get_state_folds_delta_ops_into_snapshot(track_ops):
     assert len(sent) == 1  # the lazy refresh emitted nothing new
 
 
+def test_clearing_geometry_collects_old_resource(track_ops):
+    """Regression: mesh.geometry = None once skipped GC — the orphaned
+    geometry stayed in _known and kept emitting, while JS silently ignored
+    the null and kept rendering it."""
+    geometry = p3.BoxGeometry()
+    mesh = p3.Mesh(geometry=geometry, material=p3.MeshBasicMaterial())
+    scene = p3.Scene(children=[mesh])
+    renderer = p3.Renderer(scene=scene, camera=p3.PerspectiveCamera())
+    sent = track_ops(renderer)
+
+    mesh.geometry = None
+
+    ops = ops_of(sent[0])
+    assert {"op": "update", "uuid": mesh.uuid, "props": {"geometry": None}} in ops
+    assert {"op": "remove", "uuid": geometry.uuid} in ops
+    assert geometry.uuid not in renderer._known
+    assert renderer not in geometry._renderers
+
+
+def test_render_after_get_state_still_syncs(track_ops):
+    """Regression: get_state()'s quiet snapshot injection once made a
+    later render() compare equal and emit no trait change — the one
+    public recovery tool silently failed after any autosave."""
+    renderer = p3.Renderer(scene=p3.Scene(), camera=p3.PerspectiveCamera())
+    track_ops(renderer)
+
+    changes = []
+    renderer.observe(lambda change: changes.append(change), names=["_scene_state"])
+
+    renderer.scene.background = "#123456"  # delta op: snapshot now stale
+    renderer.get_state()  # the autosave / new-client path injects quietly
+    renderer.render()
+
+    assert changes, "render() must emit a real _scene_state change"
+
+
 def test_data_texture_update_preserves_dtype(track_ops):
     """Regression: _json_safe once forced every ndarray to float32, turning
     uint8 image updates into blown-out float textures on the JS side."""
