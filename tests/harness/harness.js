@@ -163,9 +163,11 @@ const harness = {
     }
   },
 
-  /** Full-frame RGBA readback (rows flipped to top-down), base64-encoded. */
+  /** Full-frame RGBA readback (rows flipped to top-down), base64-encoded.
+   * Double render: see readPixel. */
   screenshot() {
     const renderer = this.view.renderer;
+    renderer.render(this.world.scene, this.world.camera);
     renderer.render(this.world.scene, this.world.camera);
     const gl = renderer.getContext();
     const width = gl.drawingBufferWidth;
@@ -262,9 +264,13 @@ const harness = {
     return { geometries: memory.geometries, textures: memory.textures };
   },
 
-  /** Read one pixel at fractional canvas coordinates (0..1). */
+  /** Read one pixel at fractional canvas coordinates (0..1).
+   * Renders twice: the first frame on a cold SwiftShader context has
+   * occasionally read back stale/blank — observed only on the first
+   * browser test of a session, which is CI's permanent condition. */
   readPixel(fx, fy) {
     const renderer = this.view.renderer;
+    renderer.render(this.world.scene, this.world.camera);
     renderer.render(this.world.scene, this.world.camera);
     const gl = renderer.getContext();
     const x = Math.floor(fx * (gl.drawingBufferWidth - 1));
