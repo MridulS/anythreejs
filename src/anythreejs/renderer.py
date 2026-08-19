@@ -134,6 +134,7 @@ class Renderer(anywidget.AnyWidget):
         self._controls: list = []
         self._objects: dict[str, ThreeJSBase] = {}
         self._known: set[str] = set()
+        self._refs: dict[str, int] = {}
         self._epoch = 0
         self._camera_epoch = 0
         self._batch_depth = 0
@@ -199,10 +200,21 @@ class Renderer(anywidget.AnyWidget):
 
     @camera.setter
     def camera(self, value):
+        old = self._camera
+        if value is old:
+            return
         self._camera = value
-        if value is not None:
-            value._attach_renderer(self)
-        self._full_resync()
+        # Incremental: a camera swap is an O(1) change — a full resync here
+        # would re-ship every scene buffer and rebuild the JS world.
+        self._begin_batch()
+        try:
+            if value is not None:
+                self._acquire(value)
+            self._queue({"op": "set_camera", "camera": value.uuid if value else None})
+            if old is not None:
+                self._release(old)
+        finally:
+            self._end_batch()
 
     @property
     def controls(self) -> list:
@@ -212,10 +224,27 @@ class Renderer(anywidget.AnyWidget):
 
     @controls.setter
     def controls(self, value: list):
-        self._controls = list(value) if value else []
-        for ctrl in self._controls:
-            ctrl._attach_renderer(self)
-        self._full_resync()
+        new_controls = list(value) if value else []
+        old_controls = self._controls
+        if new_controls == old_controls:
+            return
+        self._controls = new_controls
+        # Incremental: matplotgl reassigns the controls list on every
+        # zoom/pan toolbar toggle — a full resync here shipped the whole
+        # scene (12MB+ at matplotgl scale) for a ~500-byte change.
+        self._begin_batch()
+        try:
+            for ctrl in new_controls:
+                if ctrl not in old_controls:
+                    self._acquire(ctrl)
+            self._queue(
+                {"op": "set_controls", "controls": [c.uuid for c in new_controls]}
+            )
+            for ctrl in old_controls:
+                if ctrl not in new_controls:
+                    self._release(ctrl)
+        finally:
+            self._end_batch()
 
     # ------------------------------------------------------------------
     # Snapshot (full state)
@@ -265,6 +294,7 @@ class Renderer(anywidget.AnyWidget):
                 obj._detach_renderer(self)
 
         self._known = set(state["objects"])
+        self._rebuild_refs()
         self._scene_state = state
 
     def get_state(self, key=None, drop_defaults=False):
@@ -297,6 +327,7 @@ class Renderer(anywidget.AnyWidget):
             obj._renderers.discard(self)
         self._objects.clear()
         self._known.clear()
+        self._refs.clear()
         self._pending_ops = []
         super().close()
 
@@ -338,7 +369,11 @@ class Renderer(anywidget.AnyWidget):
         control_uuids = {ctrl.uuid for ctrl in self._controls}
         for op in ops:
             uid = op.get("uuid")
-            if uid == camera_uuid or uid in control_uuids:
+            if (
+                uid == camera_uuid
+                or uid in control_uuids
+                or op.get("op") in ("set_camera", "set_controls")
+            ):
                 self._camera_epoch = self._epoch
                 break
 
@@ -357,30 +392,58 @@ class Renderer(anywidget.AnyWidget):
         obj._attach_renderer(self)
         self._known.add(obj.uuid)
         for dep in obj._owned_objects():
-            self._ensure_created(dep)
+            self._acquire(dep)
         self._queue({"op": "create", "uuid": obj.uuid, "spec": obj.to_dict(flat=True)})
-        # A freshly created Object3D arrives with its children refs in the
-        # spec, but children created above were emitted before this create;
-        # JS resolves child uuids lazily so ordering is create-safe either way.
 
-    def _gc(self):
-        """Reconcile the known-uuid set against what is actually reachable
-        from the roots; emit remove ops (JS disposes) for the difference."""
-        reachable: set[str] = set()
-        stack = list(self._iter_roots())
-        while stack:
-            obj = stack.pop()
-            if obj.uuid in reachable:
-                continue
-            reachable.add(obj.uuid)
-            stack.extend(obj._owned_objects())
+    # Lifecycle is tracked with per-edge reference counts instead of
+    # reachability walks: an "edge" is a root slot (scene/camera/each
+    # control), a parent->child link, or an owned reference (geometry,
+    # material, map, EdgesGeometry source). Removal therefore costs
+    # O(released subtree), not O(scene) — a full-graph walk per artist
+    # removal once made plopp-style teardown loops quadratic. The scene
+    # graph is a DAG (verified by construction: owned refs never point
+    # back), which refcounting handles exactly.
 
-        for uid in sorted(self._known - reachable):
-            obj = self._objects.get(uid)
-            if obj is not None:
-                obj._detach_renderer(self)
-            self._known.discard(uid)
-            self._queue({"op": "remove", "uuid": uid})
+    def _acquire(self, obj: ThreeJSBase):
+        """Record one owner edge to ``obj``, creating it JS-side if new."""
+        self._ensure_created(obj)
+        self._refs[obj.uuid] = self._refs.get(obj.uuid, 0) + 1
+
+    def _release(self, obj: ThreeJSBase):
+        """Drop one owner edge; when the last edge goes, emit a remove op
+        (JS disposes), detach, and cascade to owned references."""
+        uuid = obj.uuid
+        if uuid not in self._known:
+            self._refs.pop(uuid, None)
+            return
+        count = self._refs.get(uuid, 0) - 1
+        if count > 0:
+            self._refs[uuid] = count
+            return
+        self._refs.pop(uuid, None)
+        self._known.discard(uuid)
+        self._queue({"op": "remove", "uuid": uuid})
+        obj._detach_renderer(self)
+        for dep in obj._owned_objects():
+            self._release(dep)
+
+    def _rebuild_refs(self):
+        """Recompute all edge counts from the live graph (full-resync path)."""
+        refs: dict[str, int] = {}
+        visited: set[str] = set()
+
+        def walk(obj: ThreeJSBase):
+            if obj.uuid in visited:
+                return
+            visited.add(obj.uuid)
+            for dep in obj._owned_objects():
+                refs[dep.uuid] = refs.get(dep.uuid, 0) + 1
+                walk(dep)
+
+        for root in self._iter_roots():
+            refs[root.uuid] = refs.get(root.uuid, 0) + 1
+            walk(root)
+        self._refs = refs
 
     # ------------------------------------------------------------------
     # Object event hooks (called from ThreeJSBase)
@@ -392,7 +455,7 @@ class Renderer(anywidget.AnyWidget):
         self._begin_batch()
         try:
             for child in children:
-                self._ensure_created(child)
+                self._acquire(child)
                 self._queue(
                     {"op": "child_add", "uuid": parent.uuid, "child": child.uuid}
                 )
@@ -408,7 +471,7 @@ class Renderer(anywidget.AnyWidget):
                 self._queue(
                     {"op": "child_remove", "uuid": parent.uuid, "child": child.uuid}
                 )
-            self._gc()
+                self._release(child)
         finally:
             self._end_batch()
 
@@ -470,12 +533,12 @@ class Renderer(anywidget.AnyWidget):
             new is None and isinstance(old, ThreeJSBase)
         ):
             # Reference assignment (geometry=, material=, map=, ...),
-            # including clearing it: GC must run either way so the old
-            # resource is detached and disposed.
+            # including clearing it: the old resource loses an owner edge
+            # so it is detached and disposed when unshared.
             self._begin_batch()
             try:
                 if new is not None:
-                    self._ensure_created(new)
+                    self._acquire(new)
                 self._queue(
                     {
                         "op": "update",
@@ -483,7 +546,8 @@ class Renderer(anywidget.AnyWidget):
                         "props": {name: new.uuid if new is not None else None},
                     }
                 )
-                self._gc()
+                if isinstance(old, ThreeJSBase):
+                    self._release(old)
             finally:
                 self._end_batch()
             return

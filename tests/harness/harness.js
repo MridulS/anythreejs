@@ -123,12 +123,17 @@ const harness = {
     return this.summary();
   },
 
-  /** Apply messages and force a frame, reporting JS-side timings. */
+  /** Apply messages and force a frame, reporting JS-side timings. The
+   * base64 decode (harness transport, not present in production) happens
+   * BEFORE the timer — it once accounted for ~98% of applyMs at 1M pts. */
   applyMessagesTimed(messages) {
+    const decoded = messages.map((message) => ({
+      content: message.content,
+      buffers: (message.buffers ?? []).map(b64ToDataView),
+    }));
     const t0 = performance.now();
-    for (const message of messages) {
-      const buffers = (message.buffers ?? []).map(b64ToDataView);
-      this.model.emit("msg:custom", message.content, buffers);
+    for (const message of decoded) {
+      this.model.emit("msg:custom", message.content, message.buffers);
     }
     const applyMs = performance.now() - t0;
     const t1 = performance.now();

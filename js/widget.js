@@ -175,19 +175,25 @@ function isBufferWrapper(node) {
  * against the message buffers), or a plain array (JSON fallback).
  * The bytes are copied so the result is aligned and owns its memory.
  */
-function toTypedArray(wrapper, buffers) {
+function toTypedArray(wrapper, buffers, alias = false) {
   const Ctor = typedArrayFor(wrapper.dtype);
   let d = wrapper.data;
   if (d && typeof d === "object" && !ArrayBuffer.isView(d) && "__buffer__" in d) {
     d = buffers?.[d.__buffer__];
   }
   if (d instanceof DataView) {
+    // Aliasing view when aligned: avoids a full copy on the hot buffer-op
+    // path (the message buffer is ours to keep alive).
+    if (alias && d.byteOffset % Ctor.BYTES_PER_ELEMENT === 0) {
+      return new Ctor(d.buffer, d.byteOffset, d.byteLength / Ctor.BYTES_PER_ELEMENT);
+    }
     return new Ctor(d.buffer.slice(d.byteOffset, d.byteOffset + d.byteLength));
   }
   if (d instanceof ArrayBuffer) {
-    return new Ctor(d.slice(0));
+    return alias ? new Ctor(d) : new Ctor(d.slice(0));
   }
   if (ArrayBuffer.isView(d)) {
+    if (alias && d instanceof Ctor) return d;
     return new Ctor(d.buffer.slice(d.byteOffset, d.byteOffset + d.byteLength));
   }
   if (Array.isArray(d)) {
@@ -314,9 +320,9 @@ function buildGeometry(spec, world) {
         const index = attributeArray(spec.index);
         if (index) geometry.setIndex(new THREE.BufferAttribute(index, 1));
       }
-      if (!spec.attributes?.normal && spec.attributes?.position) {
-        geometry.computeVertexNormals();
-      }
+      // Normals are computed by Mesh consumers (markMeshGeometry) —
+      // Points/Line clouds never read them, and computing them per
+      // position update cost ~80ms/tick at 1M points.
       return geometry;
     }
 
@@ -655,6 +661,7 @@ function buildSceneNode(spec, world) {
       const geometry = spec.geometry ? world.ensure(spec.geometry) : undefined;
       const material = spec.material ? world.ensure(spec.material) : undefined;
       obj = new THREE.Mesh(geometry ?? undefined, material ?? undefined);
+      if (spec.geometry) world.markMeshGeometry(spec.geometry, geometry);
       break;
     }
 
@@ -803,7 +810,11 @@ class World {
     this.cameraUuid = null;
     this.controlsTarget = new THREE.Vector3();
     this.hasControlsTarget = false;
+    this.latchUuid = null; // controls uuid the target latch belongs to
     this.lastEpoch = 0;
+    this.edgesCount = 0; // EdgesGeometry specs alive (fast-skip when 0)
+    this.edgeRebuilds = 0; // observability for coalescing tests
+    this._dirtyEdgeSources = null;
 
     this._onCustomMsg = (msg, buffers) => {
       if (msg && msg.kind === "ops") this.applyOps(msg, buffers ?? []);
@@ -877,6 +888,10 @@ class World {
     for (const [uuid, spec] of Object.entries(state.objects ?? {})) {
       this.specs.set(uuid, resolveBuffers(spec, []));
     }
+    this.edgesCount = 0;
+    for (const spec of this.specs.values()) {
+      if (spec.type === "EdgesGeometry") this.edgesCount += 1;
+    }
     this.sceneUuid = state.scene ?? null;
     this.cameraUuid = state.camera ?? null;
     this.lastEpoch = state.epoch ?? 0;
@@ -930,12 +945,21 @@ class World {
 
   applyOps(msg, buffers) {
     this.lastEpoch = msg.epoch ?? this.lastEpoch;
+    // Coalesce derived-edge rebuilds: N position ops on one source in a
+    // message trigger one re-extraction, not N.
+    this._dirtyEdgeSources = new Set();
     for (const op of msg.ops ?? []) {
       try {
         this.applyOp(op, buffers);
       } catch (error) {
         console.error("anythreejs: op failed", op, error);
       }
+    }
+    const dirty = this._dirtyEdgeSources;
+    this._dirtyEdgeSources = null;
+    for (const uuid of dirty) {
+      this.edgeRebuilds += 1;
+      this.rebuildDependents(uuid, new Set([uuid]));
     }
   }
 
@@ -944,6 +968,7 @@ class World {
       case "create": {
         const spec = resolveBuffers(op.spec, buffers);
         this.specs.set(op.uuid, spec);
+        if (spec.type === "EdgesGeometry") this.edgesCount += 1;
         if (CONTROL_TYPES.has(spec.type)) {
           this.registerControl(spec);
           for (const view of this.views) view.onWorldRebuilt();
@@ -960,8 +985,42 @@ class World {
       }
 
       case "buffer": {
-        const value = resolveBuffers(op.value ?? {}, buffers);
+        // Resolved here (not via resolveBuffers) so the hot path can use
+        // an aliasing view over the message buffer instead of a copy.
+        let value = op.value ?? {};
+        if (isBufferWrapper(value)) {
+          value = { ...value, data: toTypedArray(value, buffers, true) };
+        } else {
+          value = resolveBuffers(value, buffers);
+        }
         this.applyBufferOp(op.uuid, op.attribute, value);
+        break;
+      }
+
+      case "set_controls": {
+        this.controlSpecs = [];
+        this.pickers = [];
+        for (const uuid of op.controls ?? []) {
+          const spec = this.specs.get(uuid);
+          if (spec) this.registerControl(spec);
+        }
+        for (const view of this.views) view.onWorldRebuilt();
+        break;
+      }
+
+      case "set_camera": {
+        this.cameraUuid = op.camera ?? null;
+        let camera = this.cameraUuid ? this.ensure(this.cameraUuid) : null;
+        if (!camera) {
+          camera = new THREE.PerspectiveCamera(50, 1, 0.1, 2000);
+          camera.position.set(0, 0, 5);
+        }
+        this.camera = camera;
+        if (this.camera.parent === null && this.scene) {
+          this.scene.add(this.camera);
+        }
+        this.hasControlsTarget = false; // new camera: spec target wins
+        for (const view of this.views) view.onWorldRebuilt();
         break;
       }
 
@@ -1002,6 +1061,12 @@ class World {
     if (!obj) return; // not built yet; merged spec is used at build time
 
     if (GEOMETRY_TYPES.has(spec.type) || TEXTURE_TYPES.has(spec.type)) {
+      if (
+        spec.type === "LineGeometry" &&
+        this.updateLineGeometryInPlace(obj, spec, props)
+      ) {
+        return;
+      }
       this.rebuildResource(uuid);
       return;
     }
@@ -1092,6 +1157,7 @@ class World {
           if (geometry) {
             obj.geometry = geometry;
             if (obj.isLine2) obj.computeLineDistances();
+            if (obj.isMesh && value) this.markMeshGeometry(value, geometry);
           }
           break;
         }
@@ -1183,13 +1249,112 @@ class World {
       );
     }
     if (attribute === "position") {
-      geometry.computeBoundingBox();
-      geometry.computeBoundingSphere();
-      if (!spec.attributes?.normal) geometry.computeVertexNormals();
+      // Lazy invalidation: three recomputes bounds on demand (render/
+      // raycast) — eager recomputation cost ~116ms/tick at 1M points.
+      geometry.boundingBox = null;
+      geometry.boundingSphere = null;
+      // Normals only where a Mesh actually consumes them (see
+      // markMeshGeometry) — never for point clouds/lines.
+      if (spec.__needsNormals) geometry.computeVertexNormals();
     }
     if (attribute === "position" || attribute === "__index__") {
+      this.markEdgeSourceDirty(uuid);
+    }
+  }
+
+  /** Flag a BufferGeometry as feeding a lit Mesh: it needs computed
+   * normals at build time and after every position update. */
+  markMeshGeometry(uuid, geometry) {
+    const spec = this.specs.get(uuid);
+    if (!spec || spec.type !== "BufferGeometry") return;
+    if (spec.attributes?.normal) return;
+    spec.__needsNormals = true;
+    if (
+      geometry?.isBufferGeometry &&
+      geometry.attributes.position &&
+      !geometry.attributes.normal
+    ) {
+      geometry.computeVertexNormals();
+    }
+  }
+
+  /** Queue (or run) the derived-edges rebuild for a changed source. */
+  markEdgeSourceDirty(uuid) {
+    if (this.edgesCount === 0) return;
+    if (this._dirtyEdgeSources) {
+      this._dirtyEdgeSources.add(uuid);
+    } else {
+      this.edgeRebuilds += 1;
       this.rebuildDependents(uuid, new Set([uuid]));
     }
+  }
+
+  /** In-place fast path for LineGeometry position/color updates with an
+   * unchanged point count: writes into the existing instanced buffers,
+   * avoiding geometry rebuild + full-registry swap scan + GPU realloc
+   * (matplotgl updates every fat line per pan tick — the rebuild path
+   * made that O(lines^2)). Returns false to fall back to a rebuild. */
+  updateLineGeometryInPlace(geometry, spec, props) {
+    if (!geometry || !geometry.isLineSegmentsGeometry) return false;
+    for (const key of Object.keys(props)) {
+      if (key !== "positions" && key !== "colors") return false;
+    }
+
+    if (props.positions !== undefined) {
+      const positions = attributeArray(props.positions);
+      if (!positions) return false;
+      const start = geometry.attributes.instanceStart;
+      const segments = positions.length / 3 - 1;
+      if (!start || segments < 1 || start.data.array.length !== segments * 6) {
+        return false;
+      }
+      const buffer = start.data.array;
+      for (let i = 0; i < segments; i++) {
+        const src = i * 3;
+        const dst = i * 6;
+        for (let c = 0; c < 6; c++) buffer[dst + c] = positions[src + c];
+      }
+      start.data.needsUpdate = true;
+
+      const distances = geometry.attributes.instanceDistanceStart;
+      if (distances && distances.data.array.length === segments * 2) {
+        const dist = distances.data.array;
+        let cumulative = 0;
+        for (let i = 0; i < segments; i++) {
+          dist[2 * i] = cumulative;
+          const src = i * 3;
+          const dx = positions[src + 3] - positions[src];
+          const dy = positions[src + 4] - positions[src + 1];
+          const dz = positions[src + 5] - positions[src + 2];
+          cumulative += Math.sqrt(dx * dx + dy * dy + dz * dz);
+          dist[2 * i + 1] = cumulative;
+        }
+        distances.data.needsUpdate = true;
+      }
+      geometry.boundingBox = null;
+      geometry.boundingSphere = null;
+    }
+
+    if (props.colors !== undefined) {
+      const colors = attributeArray(props.colors);
+      const colorStart = geometry.attributes.instanceColorStart;
+      const segments = colors ? colors.length / 3 - 1 : 0;
+      if (
+        !colors ||
+        !colorStart ||
+        colorStart.data.array.length !== segments * 6
+      ) {
+        return false;
+      }
+      const buffer = colorStart.data.array;
+      for (let i = 0; i < segments; i++) {
+        const src = i * 3;
+        const dst = i * 6;
+        for (let c = 0; c < 6; c++) buffer[dst + c] = colors[src + c];
+      }
+      colorStart.data.needsUpdate = true;
+    }
+    return true;
   }
 
   /** Rebuild EdgesGeometry entries derived from a changed source
@@ -1270,6 +1435,7 @@ class World {
 
   removeObject(uuid) {
     const obj = this.objects.get(uuid);
+    if (this.specs.get(uuid)?.type === "EdgesGeometry") this.edgesCount -= 1;
     this.objects.delete(uuid);
     this.specs.delete(uuid);
     this.controlSpecs = this.controlSpecs.filter((s) => s.uuid !== uuid);
@@ -1402,6 +1568,13 @@ class View {
     }
     if (!this.controls) return;
     this.controlsUuid = spec.uuid;
+
+    // A different controls object owns the latch now: its spec target
+    // must win over any previous interactive target.
+    if (spec.uuid !== this.world.latchUuid) {
+      this.world.hasControlsTarget = false;
+      this.world.latchUuid = spec.uuid;
+    }
 
     if (this.world.hasControlsTarget) {
       this.controls.target.copy(this.world.controlsTarget);

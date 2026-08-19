@@ -27,14 +27,45 @@ def test_class_constructs_and_serializes(name):
         json.dumps(_extract_buffers(data, buffers))  # wire-transportable
 
 
+def _perturbed(field, value):
+    """A value guaranteed to differ from ``value`` and pass validation."""
+    kind = field.get("kind", "value")
+    if kind in ("ref", "ref_unowned"):
+        return object()
+    if kind == "vector":
+        base = list(value) if value is not None else [0.0, 0.0, 0.0]
+        return [base[0] + 1, *base[1:]]
+    if kind == "side":
+        return "BackSide" if value != "BackSide" else "FrontSide"
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, (int, float)):
+        validate = field.get("validate")
+        if validate and validate[0] == "range01":
+            return value / 2 if value else 0.5
+        return value + 1
+    if kind in ("color", "css"):
+        return "#123456" if value != "#123456" else "#654321"
+    if isinstance(value, str) or value is None:
+        return "perturbed" if value != "perturbed" else "perturbed2"
+    return object()
+
+
 @pytest.mark.parametrize("name", list(CATALOG))
 def test_every_field_is_an_observable_property(name):
     cls = getattr(p3, name)
     obj = cls()
     seen = []
     obj.observe(lambda change: seen.append(change["name"]))
+
+    # traitlets semantics: assigning the unchanged value is silent...
     for fname in CATALOG[name]["fields"]:
         setattr(obj, fname, getattr(obj, fname))
+    assert seen == []
+
+    # ...and any real change notifies.
+    for fname, field in CATALOG[name]["fields"].items():
+        setattr(obj, fname, _perturbed(field, getattr(obj, fname)))
     assert set(seen) == set(CATALOG[name]["fields"])
 
 

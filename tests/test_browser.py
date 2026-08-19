@@ -328,6 +328,33 @@ def test_clearing_geometry_clears_pixels(harness, track_ops):
     harness.assert_clean()
 
 
+def test_incremental_controls_and_camera_swap_via_ops(harness, track_ops):
+    """Controls/camera replacement now travels as small ops (set_controls/
+    set_camera) instead of a full snapshot resync — the browser must apply
+    them without a world rebuild, honoring the new spec target."""
+    renderer, mesh = box_fixture()
+    sent = track_ops(renderer)
+    harness.boot(renderer)
+    harness.page.evaluate("window.harness.world.controlsTarget.set(9, 9, 9)")
+
+    renderer.controls = [
+        p3.OrbitControls(controlling=renderer.camera, target=(10, 0, 0)),
+        p3.Picker(event="click"),
+    ]
+    summary = harness.apply(sent)
+    assert summary["byType"]["OrbitControls"] == 1  # old one removed
+    target = harness.page.evaluate(
+        "[...window.harness.world.views][0].controls.target.toArray()"
+    )
+    assert target == pytest.approx([10, 0, 0])
+
+    renderer.camera = p3.PerspectiveCamera(position=[0, 0, 9], aspect=200 / 150)
+    summary = harness.apply(sent)
+    assert summary["camera"]["position"] == pytest.approx([0, 0, 9])
+    assert_color(harness.pixel(0.5, 0.5), 255, 0, 0)  # still renders
+    harness.assert_clean()
+
+
 def test_controls_replacement_adopts_spec_target(harness):
     """Regression: the interactive controls-target latch survived full
     resyncs, so a NEW controls object's Python-set target was ignored and

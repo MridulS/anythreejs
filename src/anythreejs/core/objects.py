@@ -32,6 +32,8 @@ class RenderableObject(Object3D):
 
     @geometry.setter
     def geometry(self, value: Optional[ThreeJSBase]):
+        if value is self._geometry:
+            return
         old = self._geometry
         self._geometry = value
         self._notify("geometry", old, value)
@@ -43,6 +45,8 @@ class RenderableObject(Object3D):
 
     @material.setter
     def material(self, value: Optional[ThreeJSBase]):
+        if value is self._material:
+            return
         old = self._material
         self._material = value
         self._notify("material", old, value)
@@ -130,6 +134,8 @@ class Sprite(Object3D):
 
     @material.setter
     def material(self, value: Optional[ThreeJSBase]):
+        if value is self._material:
+            return
         old = self._material
         self._material = value
         self._notify("material", old, value)

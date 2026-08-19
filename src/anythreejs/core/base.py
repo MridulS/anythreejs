@@ -204,6 +204,8 @@ class Object3D(ThreeJSBase):
             raise ValueError(
                 f"position must have exactly 3 elements, got {len(value_list)}"
             )
+        if value_list == self._position:
+            return
         old = self._position
         self._position = value_list
         self._notify("position", old, self._position)
@@ -214,8 +216,11 @@ class Object3D(ThreeJSBase):
 
     @rotation.setter
     def rotation(self, value):
+        coerced = self._coerce_rotation(value)
+        if coerced == self._rotation:
+            return
         old = self._rotation
-        self._rotation = self._coerce_rotation(value)
+        self._rotation = coerced
         self._notify("rotation", old, self._rotation)
 
     @property
@@ -229,6 +234,8 @@ class Object3D(ThreeJSBase):
             raise ValueError(
                 f"scale must have exactly 3 elements, got {len(value_list)}"
             )
+        if value_list == self._scale:
+            return
         old = self._scale
         self._scale = value_list
         self._notify("scale", old, self._scale)
@@ -239,6 +246,8 @@ class Object3D(ThreeJSBase):
 
     @visible.setter
     def visible(self, value: bool):
+        if value == self._visible:
+            return
         old = self._visible
         self._visible = value
         self._notify("visible", old, value)
@@ -249,6 +258,8 @@ class Object3D(ThreeJSBase):
 
     @name.setter
     def name(self, value: str):
+        if value == self._name:
+            return
         old = self._name
         self._name = value
         self._notify("name", old, value)

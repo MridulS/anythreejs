@@ -33,6 +33,8 @@ class PerspectiveCamera(Object3D):
 
     @fov.setter
     def fov(self, value: float):
+        if value == self._fov:
+            return
         old = self._fov
         self._fov = value
         self._notify("fov", old, value)
@@ -43,6 +45,8 @@ class PerspectiveCamera(Object3D):
 
     @aspect.setter
     def aspect(self, value: float):
+        if value == self._aspect:
+            return
         old = self._aspect
         self._aspect = value
         self._notify("aspect", old, value)
@@ -53,6 +57,8 @@ class PerspectiveCamera(Object3D):
 
     @near.setter
     def near(self, value: float):
+        if value == self._near:
+            return
         old = self._near
         self._near = value
         self._notify("near", old, value)
@@ -63,6 +69,8 @@ class PerspectiveCamera(Object3D):
 
     @far.setter
     def far(self, value: float):
+        if value == self._far:
+            return
         old = self._far
         self._far = value
         self._notify("far", old, value)
@@ -141,6 +149,8 @@ class OrthographicCamera(Object3D):
 
     @left.setter
     def left(self, value: float):
+        if value == self._left:
+            return
         old = self._left
         self._left = value
         self._notify("left", old, value)
@@ -151,6 +161,8 @@ class OrthographicCamera(Object3D):
 
     @right.setter
     def right(self, value: float):
+        if value == self._right:
+            return
         old = self._right
         self._right = value
         self._notify("right", old, value)
@@ -161,6 +173,8 @@ class OrthographicCamera(Object3D):
 
     @top.setter
     def top(self, value: float):
+        if value == self._top:
+            return
         old = self._top
         self._top = value
         self._notify("top", old, value)
@@ -171,6 +185,8 @@ class OrthographicCamera(Object3D):
 
     @bottom.setter
     def bottom(self, value: float):
+        if value == self._bottom:
+            return
         old = self._bottom
         self._bottom = value
         self._notify("bottom", old, value)
@@ -181,6 +197,8 @@ class OrthographicCamera(Object3D):
 
     @near.setter
     def near(self, value: float):
+        if value == self._near:
+            return
         old = self._near
         self._near = value
         self._notify("near", old, value)
@@ -191,6 +209,8 @@ class OrthographicCamera(Object3D):
 
     @far.setter
     def far(self, value: float):
+        if value == self._far:
+            return
         old = self._far
         self._far = value
         self._notify("far", old, value)
@@ -201,6 +221,8 @@ class OrthographicCamera(Object3D):
 
     @zoom.setter
     def zoom(self, value: float):
+        if value == self._zoom:
+            return
         old = self._zoom
         self._zoom = value
         self._notify("zoom", old, value)

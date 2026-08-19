@@ -206,6 +206,146 @@ def test_scalar_update_latency(track_ops):
     assert median < 0.005  # 5ms bound; expected tens of microseconds
 
 
+def test_controls_swap_is_incremental(track_wire):
+    """Regression (critical review finding): assigning renderer.controls
+    once triggered a full snapshot resync, re-shipping every scene buffer
+    (28MB at 1M points) — matplotgl does this on every zoom-toolbar
+    toggle. It must now cost a few hundred bytes of ops."""
+    renderer, geometry, material = make_cloud(N_LARGE)
+    track_wire.clear()  # construction traffic is not under test
+
+    renderer.controls = renderer.controls + [p3.Picker(event="click")]
+
+    json_bytes = sum(r["json"] for r in track_wire)
+    buffer_bytes = sum(r["buffers"] for r in track_wire)
+    report(
+        "controls swap on 1M-point scene",
+        json_bytes=json_bytes,
+        buffer_bytes=buffer_bytes,
+    )
+    assert buffer_bytes == 0  # scene buffers must NOT be re-shipped
+    assert json_bytes < 20_000
+
+
+def test_camera_swap_is_incremental(track_wire):
+    """Same contract for camera replacement."""
+    renderer, geometry, material = make_cloud(N_LARGE)
+    track_wire.clear()
+
+    renderer.camera = p3.PerspectiveCamera(position=[9, 9, 9])
+
+    buffer_bytes = sum(r["buffers"] for r in track_wire)
+    json_bytes = sum(r["json"] for r in track_wire)
+    report(
+        "camera swap on 1M-point scene",
+        json_bytes=json_bytes,
+        buffer_bytes=buffer_bytes,
+    )
+    assert buffer_bytes == 0
+    assert json_bytes < 20_000
+
+
+def test_artist_removal_is_not_quadratic(track_ops):
+    """Regression: per-removal full-graph GC made clearing K artists
+    O(K*N) — 326ms for 800 locally, >1s on CI. Refcounted release is
+    O(removed subtree) per artist."""
+    scene = p3.Scene()
+    artists = []
+    for _ in range(800):
+        artist = p3.Points(
+            geometry=p3.BufferGeometry(
+                attributes={
+                    "position": p3.BufferAttribute(np.zeros((3, 3), dtype="float32"))
+                }
+            ),
+            material=p3.PointsMaterial(),
+        )
+        scene.add(artist)
+        artists.append(artist)
+    camera = p3.PerspectiveCamera()
+    renderer = p3.Renderer(scene=scene, camera=camera)
+    track_ops(renderer)
+
+    start = time.perf_counter()
+    for artist in artists:
+        scene.remove(artist)
+    elapsed = time.perf_counter() - start
+
+    report(
+        "remove 800 artists one-by-one",
+        seconds=f"{elapsed:.3f}",
+        per_remove_us=f"{elapsed / 800 * 1e6:.0f}",
+    )
+    assert elapsed < 0.25  # the quadratic path cannot fit under this
+    assert renderer._known == {scene.uuid, camera.uuid}  # fully collected
+
+
+def test_reference_swap_does_not_walk_scene(track_ops):
+    """Swapping one mesh's geometry must not scale with scene size (the
+    old GC walked every live object per swap)."""
+    scene = p3.Scene()
+    for _ in range(400):
+        scene.add(
+            p3.Points(
+                geometry=p3.BufferGeometry(
+                    attributes={
+                        "position": p3.BufferAttribute(
+                            np.zeros((3, 3), dtype="float32")
+                        )
+                    }
+                ),
+                material=p3.PointsMaterial(),
+            )
+        )
+    mesh = p3.Mesh(geometry=p3.BoxGeometry(), material=p3.MeshBasicMaterial())
+    scene.add(mesh)
+    renderer = p3.Renderer(scene=scene, camera=p3.PerspectiveCamera())
+    track_ops(renderer)
+
+    start = time.perf_counter()
+    for _ in range(100):
+        mesh.geometry = p3.BoxGeometry()
+    elapsed = time.perf_counter() - start
+
+    report(
+        "100 geometry swaps on 1200-object scene",
+        seconds=f"{elapsed:.3f}",
+        per_swap_us=f"{elapsed / 100 * 1e6:.0f}",
+    )
+    assert elapsed < 0.03  # full-walk GC costs ~3x this even locally
+
+
+def test_redundant_assignment_is_silent(track_ops):
+    """traitlets semantics: assigning an unchanged value must emit
+    nothing (each redundant set used to cost a comm message)."""
+    renderer, geometry, material = make_cloud(N_MEDIUM)
+    sent = track_ops(renderer)
+
+    material.size = 2  # constructed with size=2
+    renderer.camera.position = [3, 3, 3]  # constructed at [3, 3, 3]
+    material.color = material.color
+
+    assert sent == []
+
+
+def test_full_resync_wall_time_at_scale(track_ops):
+    """render() serializes per-object with zero-copy buffer wrappers, and
+    the traitlets equality check must short-circuit on the resync counter
+    BEFORE deep-comparing megabytes of memoryview content. The snapshot
+    dict's key order is load-bearing for that short-circuit — this pins
+    it."""
+    renderer, geometry, material = make_cloud(N_LARGE)
+    track_ops(renderer)
+
+    start = time.perf_counter()
+    renderer.render()
+    renderer.render()
+    elapsed = time.perf_counter() - start
+
+    report("2x render() at 1M points", seconds=f"{elapsed:.4f}")
+    assert elapsed < 0.1  # deep-comparing the buffers costs far more
+
+
 def test_initial_snapshot_build_time():
     """Full snapshot serialization of a 1M-point scene stays cheap because
     array data is wrapped as memoryviews, not JSON."""

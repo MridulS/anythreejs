@@ -87,9 +87,79 @@ def test_update_to_frame_latency(harness, track_ops):
         js_apply_ms=f"{timings['applyMs']:.1f}",
         js_render_ms=f"{timings['renderMs']:.1f}",
     )
-    # Generous bounds: JS-side work must stay well under a second.
-    assert timings["applyMs"] < 1000
-    assert timings["renderMs"] < 2000
+    # applyMs now excludes harness base64 decode, so this measures real
+    # widget work (~0.3ms at 100k locally) — bound is CI headroom only.
+    assert timings["applyMs"] < 50
+    assert timings["renderMs"] < 500
+    harness.assert_clean()
+
+
+def test_fat_line_update_tick(harness, track_ops):
+    """matplotgl pan tick: update every fat line's positions. The in-place
+    instanced-buffer path keeps this linear in line count — the rebuild
+    path (fresh LineGeometry + full-registry swap scan per line) made it
+    O(lines^2), ~24ms at this scale and growing quadratically."""
+    rng = np.random.default_rng(5)
+    scene = p3.Scene(background="#000000")
+    line_geometries = []
+    for _ in range(100):
+        geometry = p3.LineGeometry(positions=rng.random((100, 3)).astype("float32"))
+        line_geometries.append(geometry)
+        scene.add(p3.Line2(geometry=geometry, material=p3.LineMaterial(linewidth=2)))
+    renderer = p3.Renderer(scene=scene, camera=p3.PerspectiveCamera())
+    sent = track_ops(renderer)
+    harness.boot(renderer)
+
+    probe = line_geometries[0]
+    before = harness.object(probe.uuid)["attributes"]["instanceStart"]["first"]
+
+    for geometry in line_geometries:
+        geometry.positions = rng.random((100, 3)).astype("float32")
+    timings = harness.apply_timed(sent)
+
+    after = harness.object(probe.uuid)["attributes"]["instanceStart"]["first"]
+    assert after != before  # the in-place write really landed
+
+    report(
+        "pan tick: 100 fat lines x 100 pts",
+        js_apply_ms=f"{timings['applyMs']:.1f}",
+    )
+    assert timings["applyMs"] < 30  # rebuild path costs ~3x this on CI
+    harness.assert_clean()
+
+
+def test_edge_rebuilds_coalesce_per_message(harness, track_ops):
+    """Multiple position ops on one source geometry within a message must
+    trigger ONE derived-edges re-extraction, not one per op."""
+    positions = p3.BufferAttribute(
+        np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype="float32")
+    )
+    geometry = p3.BufferGeometry(
+        attributes={"position": positions},
+        index=p3.BufferAttribute(np.array([0, 1, 2], dtype="uint32"), itemSize=1),
+    )
+    scene = p3.Scene(
+        children=[
+            p3.Mesh(geometry=geometry, material=p3.MeshBasicMaterial()),
+            p3.LineSegments(
+                geometry=p3.EdgesGeometry(geometry),
+                material=p3.LineBasicMaterial(),
+            ),
+        ]
+    )
+    renderer = p3.Renderer(scene=scene, camera=p3.PerspectiveCamera())
+    sent = track_ops(renderer)
+    harness.boot(renderer)
+
+    rebuilds_before = harness.page.evaluate("window.harness.world.edgeRebuilds")
+    with geometry.hold_trait_notifications():
+        positions.array = np.array([[0, 0, 0], [2, 0, 0], [0, 2, 0]], dtype="float32")
+        positions.array = np.array([[0, 0, 0], [3, 0, 0], [0, 3, 0]], dtype="float32")
+    assert len(sent) == 1  # both ops in one message
+    harness.apply(sent)
+    rebuilds_after = harness.page.evaluate("window.harness.world.edgeRebuilds")
+
+    assert rebuilds_after - rebuilds_before == 1
     harness.assert_clean()
 
 

@@ -26,6 +26,8 @@ class Scene(Object3D):
 
     @background.setter
     def background(self, value: str):
+        if value == self._background:
+            return
         old = self._background
         self._background = value
         self._notify("background", old, value)

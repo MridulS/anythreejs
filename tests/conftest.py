@@ -149,6 +149,32 @@ def harness(page):
 
 
 @pytest.fixture
+def track_wire(monkeypatch):
+    """Record EVERY message crossing the comm — including trait syncs (the
+    snapshot channel), which ``track_ops`` cannot see because it wraps
+    only ``renderer.send``. That blind spot once hid a 28MB-per-toolbar-
+    click resync. Entries: {"type", "json" bytes, "buffers" bytes}."""
+    import json as _json
+
+    records = []
+
+    def publish_msg(self, msg_type, data=None, metadata=None, buffers=None, **keys):
+        records.append(
+            {
+                "type": msg_type,
+                "json": len(_json.dumps(data, default=str).encode()) if data else 0,
+                "buffers": sum(
+                    len(bytes(b)) if isinstance(b, memoryview) else len(b)
+                    for b in (buffers or [])
+                ),
+            }
+        )
+
+    monkeypatch.setattr(DummyComm, "publish_msg", publish_msg)
+    return records
+
+
+@pytest.fixture
 def track_ops():
     """Replace ``renderer.send`` with a recorder; returns the list that
     collects ``{"content": ..., "buffers": ...}`` entries for every delta

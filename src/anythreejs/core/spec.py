@@ -136,6 +136,14 @@ class Prop:
         value = self._coerce(value)
         if self.validator is not None:
             value = self.validator(value, self.name)
+        if self.name in obj.__dict__:
+            # traitlets semantics: assigning an unchanged value is silent
+            # (no observer dispatch, no comm message).
+            try:
+                if bool(obj.__dict__[self.name] == value):
+                    return
+            except (ValueError, TypeError):
+                pass  # ambiguous comparison (e.g. arrays): treat as changed
         old = obj.__dict__.get(self.name)
         obj.__dict__[self.name] = value
         obj._notify(self.name, old, value)
