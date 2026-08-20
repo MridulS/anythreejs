@@ -532,6 +532,27 @@ def test_scene_snapshot_swap_preserves_interactive_pose(harness):
     harness.assert_clean()
 
 
+def test_resync_applies_python_moved_camera_pose(harness):
+    """Regression: the ready-handshake resync carries the pose plopp's
+    autoscale set while the browser was still importing the module. Pose
+    preservation must not pin the camera to the stale boot pose — a
+    snapshot whose camera or controls spec MOVED adopts the Python pose
+    (mesh3d figures opened with the camera inside the teapot without
+    this)."""
+    renderer, mesh = box_fixture()
+    harness.boot(renderer)
+
+    renderer.camera.position = (4, 5, 6)
+    renderer._controls[0].target = (1, 2, 3)
+    renderer.render()
+    summary = harness.set_scene_state(renderer)
+
+    assert summary["camera"]["position"] == pytest.approx([4, 5, 6])
+    target = harness.page.evaluate("window.harness.view.controls.target.toArray()")
+    assert target == pytest.approx([1, 2, 3])
+    harness.assert_clean()
+
+
 def test_hex8_colors_and_torus(harness):
     torus = p3.TorusGeometry(radius=1, tube=0.4)
     mesh = p3.Mesh(geometry=torus, material=p3.MeshBasicMaterial(color="#00ff00ff"))

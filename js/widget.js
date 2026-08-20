@@ -916,6 +916,12 @@ class World {
     const sameCamera =
       this.cameraUuid !== null && (state.camera ?? null) === this.cameraUuid;
     const previousControlsUuid = this.controlSpecs[0]?.uuid ?? null;
+    const oldCameraSpec = this.cameraUuid
+      ? this.specs.get(this.cameraUuid)
+      : null;
+    const oldControlsSpec = previousControlsUuid
+      ? this.specs.get(previousControlsUuid)
+      : null;
 
     let pose = null;
     if (preservePose && sameCamera && this.camera) {
@@ -967,17 +973,36 @@ class World {
       previousControlsUuid !== null &&
       (this.controlSpecs[0]?.uuid ?? null) === previousControlsUuid;
 
-    if (pose) {
+    // Python's pose wins whenever the snapshot MOVED the camera or target
+    // (e.g. the ready-handshake resync carrying an autoscale that raced the
+    // module load). The interactive pose is only carried across a resync
+    // whose specs left the pose untouched.
+    const POSE_KEYS = ["position", "rotation", "quaternion", "lookAt", "zoom"];
+    const posePart = (spec) =>
+      JSON.stringify(POSE_KEYS.map((key) => spec?.[key] ?? null));
+    const cameraSpecUnchanged =
+      posePart(oldCameraSpec) ===
+      posePart(this.cameraUuid ? this.specs.get(this.cameraUuid) : null);
+    const targetSpecUnchanged =
+      JSON.stringify(oldControlsSpec?.target ?? null) ===
+      JSON.stringify(this.controlSpecs[0]?.target ?? null);
+
+    if (pose && cameraSpecUnchanged) {
       this.camera.position.copy(pose.position);
       this.camera.rotation.copy(pose.rotation);
       this.camera.zoom = pose.zoom;
       this.camera.updateProjectionMatrix?.();
-      if (sameControls) {
+      if (sameControls && targetSpecUnchanged) {
         this.controlsTarget.copy(pose.target);
         this.hasControlsTarget = pose.hasTarget;
       }
     }
-    if (!sameCamera || !sameControls) {
+    if (
+      !sameCamera ||
+      !sameControls ||
+      !cameraSpecUnchanged ||
+      !targetSpecUnchanged
+    ) {
       this.hasControlsTarget = false;
     }
 
