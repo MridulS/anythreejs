@@ -867,6 +867,23 @@ class World {
     model.on("change:_scene_state", this._onSnapshot);
 
     this.applySnapshot(false);
+
+    // Page-level debug registry: lets a devtools console (or a driving
+    // browser) inspect every live World without reaching into widget
+    // internals — invaluable for diagnosing field reports.
+    (globalThis.__anythreejsWorlds ??= new Set()).add(this);
+
+    // Announce readiness NOW that our listeners exist: any delta ops sent
+    // before this moment (plopp streams its whole scene right after the
+    // widget opens, while the bundle is still importing) were lost, and
+    // the kernel answers by resyncing the snapshot trait — which is
+    // stateful and therefore never lost. A failed send must be loud:
+    // a swallowed one leaves the widget frozen on its boot snapshot.
+    try {
+      model.send({ kind: "ready" });
+    } catch (error) {
+      console.warn("anythreejs: ready handshake failed", error);
+    }
   }
 
   // -- construction -------------------------------------------------------
@@ -1572,6 +1589,7 @@ class World {
   }
 
   dispose() {
+    globalThis.__anythreejsWorlds?.delete(this);
     this.model.off("msg:custom", this._onCustomMsg);
     this.model.off("change:_scene_state", this._onSnapshot);
     this.disposeAll();
@@ -1953,33 +1971,27 @@ function getModifiers(event) {
 // ---------------------------------------------------------------------------
 
 export default {
-  initialize({ model }) {
-    const world = new World(model);
-    model._anythreejsWorld = world;
-    // Delta ops sent while this module was still being fetched/imported
-    // never reached our listeners (Jupyter streams them right after the
-    // widget opens — plopp builds its whole scene that way). Announce
-    // readiness so the kernel resyncs the snapshot trait, which is
-    // stateful and therefore never lost.
-    try {
-      model.send({ kind: "ready" });
-    } catch (error) {
-      debug("ready handshake failed", error);
-    }
-    return () => {
-      world.dispose();
-      delete model._anythreejsWorld;
-    };
-  },
+  // No initialize hook: anywidget invokes it before the model's state is
+  // populated (an empty snapshot) and with a model wrapper that is NOT the
+  // object later hooks receive — an expando set here is invisible to
+  // render, so a World created here is an unreachable zombie that doubles
+  // message processing, and a "ready" sent here can be silently lost.
+  // Everything lives with the view instead.
 
   render({ model, el }) {
-    let world = model._anythreejsWorld;
-    if (!world) {
-      // Environments that skip initialize (older anywidget) still work.
-      world = new World(model);
-      model._anythreejsWorld = world;
-    }
+    // One World per view. Cross-hook sharing is impossible (see above),
+    // and each view owns a WebGL context anyway; the World announces
+    // "ready" from its constructor, so the kernel resyncs any ops this
+    // widget missed while the bundle was importing.
+    const world = new World(model);
+    model._anythreejsWorld = world; // harness/devtools convenience
+    // Backstop: a kernel restart closes the comm and destroys the model;
+    // if anywidget's cleanup doesn't reach us, release the World then.
+    model.on("destroy", () => world.dispose());
     const view = new View(world, model, el);
-    return () => view.dispose();
+    return () => {
+      view.dispose();
+      world.dispose();
+    };
   },
 };

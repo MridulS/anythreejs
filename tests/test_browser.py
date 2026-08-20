@@ -662,3 +662,14 @@ def test_plopp_scatter3d_renders_in_browser(harness):
     assert summary["registry"] > 10
     harness.render_info()  # a full render pass must not error
     harness.assert_clean()
+
+
+def test_world_announces_ready_on_boot(harness):
+    """The kernel resyncs missed startup ops when a World announces itself;
+    a lost or unsent "ready" leaves the widget frozen on its boot snapshot
+    (the empty-plot bug), so its emission is pinned here."""
+    renderer, _ = box_fixture()
+    harness.boot(renderer)
+    sent = harness.page.evaluate("window.harness.model.sentMessages ?? []")
+    assert {"kind": "ready"} in sent
+    harness.assert_clean()

@@ -100,8 +100,10 @@ const harness = {
     this.module = (await import("/widget.js")).default;
     this.model = new FakeModel(state);
 
-    const initCleanup = this.module.initialize({ model: this.model });
-    if (initCleanup) this.cleanups.push(initCleanup);
+    if (this.module.initialize) {
+      const initCleanup = this.module.initialize({ model: this.model });
+      if (initCleanup) this.cleanups.push(initCleanup);
+    }
 
     const el = document.getElementById("root");
     el.innerHTML = "";
