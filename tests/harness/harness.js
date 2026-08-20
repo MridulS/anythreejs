@@ -169,8 +169,28 @@ const harness = {
   },
 
   /** Full-frame RGBA readback (rows flipped to top-down), base64-encoded.
-   * Double render: see readPixel. */
-  screenshot() {
+   * Retries once on an all-black frame: see readPixel. */
+  async screenshot() {
+    let shot = this._screenshotOnce();
+    let allBlack = true;
+    for (let i = 0; i < shot.pixels.length; i += 64) {
+      if (shot.pixels[i] || shot.pixels[i + 1] || shot.pixels[i + 2]) {
+        allBlack = false;
+        break;
+      }
+    }
+    if (allBlack) {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      shot = this._screenshotOnce();
+    }
+    let binary = "";
+    for (let i = 0; i < shot.pixels.length; i += 8192) {
+      binary += String.fromCharCode(...shot.pixels.subarray(i, i + 8192));
+    }
+    return { width: shot.width, height: shot.height, b64: btoa(binary) };
+  },
+
+  _screenshotOnce() {
     const renderer = this.view.renderer;
     renderer.render(this.world.scene, this.world.camera);
     renderer.render(this.world.scene, this.world.camera);
@@ -188,12 +208,7 @@ const harness = {
         (height - 1 - y) * rowBytes
       );
     }
-
-    let binary = "";
-    for (let i = 0; i < flipped.length; i += 8192) {
-      binary += String.fromCharCode(...flipped.subarray(i, i + 8192));
-    }
-    return { width, height, b64: btoa(binary) };
+    return { width, height, pixels: flipped };
   },
 
   setSceneState(payload) {
@@ -273,11 +288,7 @@ const harness = {
     return { geometries: memory.geometries, textures: memory.textures };
   },
 
-  /** Read one pixel at fractional canvas coordinates (0..1).
-   * Renders twice: the first frame on a cold SwiftShader context has
-   * occasionally read back stale/blank — observed only on the first
-   * browser test of a session, which is CI's permanent condition. */
-  readPixel(fx, fy) {
+  _readPixelOnce(fx, fy) {
     const renderer = this.view.renderer;
     renderer.render(this.world.scene, this.world.camera);
     renderer.render(this.world.scene, this.world.camera);
@@ -295,6 +306,20 @@ const harness = {
       px
     );
     return [...px];
+  },
+
+  /** Read one pixel at fractional canvas coordinates (0..1).
+   * Cold-start SwiftShader has intermittently returned a stale black
+   * frame on a session's FIRST read (4 sightings, never reproducible
+   * after) — CI runners are always cold. A black read retries once after
+   * an animation frame; genuinely black pixels just pay one rAF. */
+  async readPixel(fx, fy) {
+    let px = this._readPixelOnce(fx, fy);
+    if (px[0] === 0 && px[1] === 0 && px[2] === 0) {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      px = this._readPixelOnce(fx, fy);
+    }
+    return px;
   },
 
   savedStates() {

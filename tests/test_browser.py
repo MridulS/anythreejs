@@ -348,6 +348,11 @@ def test_incremental_controls_and_camera_swap_via_ops(harness, track_ops):
     )
     assert target == pytest.approx([10, 0, 0])
 
+    # Re-aim at the origin first — otherwise the pixel assertion below
+    # races the controls legitimately rotating the new camera toward the
+    # (10, 0, 0) target set above (this race masqueraded as a cold-start
+    # flake more than once).
+    renderer.controls[0].target = (0, 0, 0)
     renderer.camera = p3.PerspectiveCamera(position=[0, 0, 9], aspect=200 / 150)
     summary = harness.apply(sent)
     assert summary["camera"]["position"] == pytest.approx([0, 0, 9])
