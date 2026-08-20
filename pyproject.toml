@@ -1,6 +1,6 @@
 [project]
 name = "anythreejs"
-version = "0.3.0"
+version = "0.3.1"
 description = "Anywidget wrapper for three.js"
 readme = "README.md"
 authors = [
