@@ -102,8 +102,14 @@ renderer
 
 ## pythreejs Compatibility
 
-anythreejs tries to be API-compatible with the original `pythreejs`. For projects that already use pythreejs
-(like [plopp](https://github.com/scipp/plopp)), you can switch with minimal changes:
+anythreejs tries to be API-compatible with the original `pythreejs`. CI
+continuously verifies the drop-in claim by running the *unmodified* test
+suites of three pythreejs-based projects —
+[plopp](https://github.com/scipp/plopp),
+[matplotgl](https://github.com/scipp/matplotgl), and
+[McStasScript](https://github.com/PaNOSC-ViNYL/McStasScript) — against
+anythreejs through an import alias. For projects that already use
+pythreejs, you can switch with minimal changes:
 
 ```python
 # Instead of:

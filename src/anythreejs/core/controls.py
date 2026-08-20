@@ -33,12 +33,16 @@ class Picker(ThreeJSBase):
         controlling=None,
         event: str = "click",
         all: bool = False,
+        lineThreshold: float | None = None,
+        pointThreshold: float | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self._controlling = controlling
         self._event = event
         self._all = all
+        self._lineThreshold = lineThreshold
+        self._pointThreshold = pointThreshold
         self._point: tuple | None = None
         self._face: tuple | None = None
         self._faceNormal: tuple | None = None
@@ -76,6 +80,32 @@ class Picker(ThreeJSBase):
         old = self._all
         self._all = value
         self._notify("all", old, value)
+
+    @property
+    def lineThreshold(self) -> float | None:
+        """World-space raycast tolerance for picking lines."""
+        return self._lineThreshold
+
+    @lineThreshold.setter
+    def lineThreshold(self, value):
+        if value == self._lineThreshold:
+            return
+        old = self._lineThreshold
+        self._lineThreshold = value
+        self._notify("lineThreshold", old, value)
+
+    @property
+    def pointThreshold(self) -> float | None:
+        """World-space raycast tolerance for picking points."""
+        return self._pointThreshold
+
+    @pointThreshold.setter
+    def pointThreshold(self, value):
+        if value == self._pointThreshold:
+            return
+        old = self._pointThreshold
+        self._pointThreshold = value
+        self._notify("pointThreshold", old, value)
 
     @property
     def point(self) -> tuple | None:
@@ -154,6 +184,10 @@ class Picker(ThreeJSBase):
             "event": self._event,
             "all": self._all,
         }
+        if self._lineThreshold is not None:
+            result["lineThreshold"] = self._lineThreshold
+        if self._pointThreshold is not None:
+            result["pointThreshold"] = self._pointThreshold
         if self._controlling is not None:
             result["controlling"] = _controlling_ref(self._controlling)
         return result

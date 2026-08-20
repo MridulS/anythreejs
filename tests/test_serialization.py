@@ -107,6 +107,33 @@ def test_buffer_attribute_dtype_follows_array():
     assert explicit.array.dtype == np.dtype("uint16")
 
 
+def test_quaternion_serializes_only_when_set():
+    """pythreejs surface: McStasScript orients components via quaternions."""
+    mesh = p3.Mesh(geometry=p3.BoxGeometry(), material=p3.MeshBasicMaterial())
+    assert mesh.quaternion == (0.0, 0.0, 0.0, 1.0)
+    assert "quaternion" not in mesh.to_dict(flat=True)
+
+    mesh.quaternion = (0.0, 0.7071, 0.0, 0.7071)
+    assert mesh.to_dict(flat=True)["quaternion"] == pytest.approx(
+        [0.0, 0.7071, 0.0, 0.7071]
+    )
+    with pytest.raises(ValueError):
+        mesh.quaternion = (1.0, 2.0, 3.0)
+
+
+def test_picker_raycast_thresholds():
+    """McStasScript passes per-picker raycast tolerances."""
+    mesh = p3.Mesh(geometry=p3.BoxGeometry(), material=p3.MeshBasicMaterial())
+    picker = p3.Picker(
+        controlling=mesh, event="click", lineThreshold=0.05, pointThreshold=0.05
+    )
+    spec = picker.to_dict(flat=True)
+    assert spec["lineThreshold"] == 0.05
+    assert spec["pointThreshold"] == 0.05
+    # omitted when unset (JS falls back to three.js defaults)
+    assert "lineThreshold" not in p3.Picker().to_dict(flat=True)
+
+
 def test_rotation_four_tuple():
     obj = p3.Object3D(rotation=(0.1, 0.2, 0.3, "ZYX"))
     assert obj.rotation == (0.1, 0.2, 0.3, "ZYX")

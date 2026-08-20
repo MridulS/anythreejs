@@ -48,6 +48,8 @@ class Picker(ThreeJSBase):
     controlling: Any
     event: Any
     all: Any
+    lineThreshold: Any
+    pointThreshold: Any
     point: Any
     face: Any
     faceNormal: Any
@@ -56,5 +58,11 @@ class Picker(ThreeJSBase):
     distance: Any
     modifiers: Any
     def __init__(
-        self, controlling: Any = ..., event: Any = ..., all: Any = ..., **kwargs: Any
+        self,
+        controlling: Any = ...,
+        event: Any = ...,
+        all: Any = ...,
+        lineThreshold: Any = ...,
+        pointThreshold: Any = ...,
+        **kwargs: Any,
     ) -> None: ...

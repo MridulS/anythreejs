@@ -303,6 +303,16 @@ CATALOG: dict[str, dict] = {
             "thetaLength": {"default": TAU},
         },
     },
+    "CircleGeometry": {
+        "category": "geometry",
+        "doc": "Flat circle (disc) geometry.",
+        "fields": {
+            "radius": {"default": 1, "validate": ("positive",)},
+            "segments": {"default": 32, "validate": ("min_int", 3)},
+            "thetaStart": {"default": 0},
+            "thetaLength": {"default": TAU},
+        },
+    },
     "TorusGeometry": {
         "category": "geometry",
         "doc": "Torus (donut) geometry.",

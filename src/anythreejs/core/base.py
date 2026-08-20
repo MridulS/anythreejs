@@ -170,6 +170,7 @@ class Object3D(ThreeJSBase):
         scale: tuple | list = (1, 1, 1),
         visible: bool = True,
         name: str = "",
+        quaternion: tuple | list | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -178,7 +179,37 @@ class Object3D(ThreeJSBase):
         self._scale = list(scale)
         self._visible = visible
         self._name = name
+        self._quaternion = self._coerce_quaternion(quaternion)
         self._children: list["Object3D"] = []
+
+    @staticmethod
+    def _coerce_quaternion(value):
+        if value is None:
+            return None
+        value_list = [float(v) for v in value]
+        if len(value_list) != 4:
+            raise ValueError(
+                f"quaternion must have 4 elements (x, y, z, w), got {len(value_list)}"
+            )
+        return value_list
+
+    @property
+    def quaternion(self) -> tuple:
+        """Orientation as (x, y, z, w). When set, it takes precedence over
+        ``rotation`` on the browser side (pythreejs-compatible surface —
+        McStasScript orients components via quaternions)."""
+        if self._quaternion is None:
+            return (0.0, 0.0, 0.0, 1.0)
+        return tuple(self._quaternion)
+
+    @quaternion.setter
+    def quaternion(self, value):
+        coerced = self._coerce_quaternion(value)
+        if coerced == self._quaternion:
+            return
+        old = self._quaternion
+        self._quaternion = coerced
+        self._notify("quaternion", old, coerced)
 
     @staticmethod
     def _coerce_rotation(value) -> list:
@@ -340,6 +371,8 @@ class Object3D(ThreeJSBase):
         )
         if len(self._rotation) == 4:
             data["rotationOrder"] = self._rotation[3]
+        if self._quaternion is not None:
+            data["quaternion"] = list(self._quaternion)
         if self._children:
             if flat:
                 data["children"] = [child.uuid for child in self._children]

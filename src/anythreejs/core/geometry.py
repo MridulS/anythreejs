@@ -24,6 +24,7 @@ __all__ = [
     "PlaneBufferGeometry",
     "CylinderGeometry",
     "CylinderBufferGeometry",
+    "CircleGeometry",
     "TorusGeometry",
     "EdgesGeometry",
     "LineGeometry",
@@ -159,6 +160,7 @@ BoxGeometry = make_class("BoxGeometry", ThreeJSBase)
 SphereGeometry = make_class("SphereGeometry", ThreeJSBase)
 PlaneGeometry = make_class("PlaneGeometry", ThreeJSBase)
 CylinderGeometry = make_class("CylinderGeometry", ThreeJSBase)
+CircleGeometry = make_class("CircleGeometry", ThreeJSBase)
 TorusGeometry = make_class("TorusGeometry", ThreeJSBase)
 
 # Aliases for pythreejs compatibility

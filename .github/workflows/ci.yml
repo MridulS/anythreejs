@@ -87,6 +87,31 @@ jobs:
           upstream-plopp/tests/plotting/mesh3d_test.py
           -q -W "ignore::PendingDeprecationWarning"
 
+  mcstas-drop-in:
+    name: Drop-in gate (unmodified upstream McStasScript)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Sync environment
+        run: uv sync --group dev
+      - name: Fetch unmodified upstream McStasScript (imports pythreejs)
+        run: >-
+          git clone --depth 1 https://github.com/PaNOSC-ViNYL/McStasScript
+          upstream-mcstasscript
+      - name: Install McStasScript and reassert local anythreejs
+        run: |
+          uv pip install -e ./upstream-mcstasscript
+          uv pip install --reinstall --no-deps -e .
+      - name: Integration tests
+        run: uv run --no-sync pytest tests/test_mcstasscript_compat.py -q
+      - name: McStasScript's own geometry-viewer suite through the shim
+        run: >-
+          PYTHONPATH=tests/shims uv run --no-sync pytest
+          upstream-mcstasscript/mcstasscript/tests/test_geometry_viewer.py -q
+
   matplotgl:
     name: Drop-in gate (unmodified upstream matplotgl)
     runs-on: ubuntu-latest

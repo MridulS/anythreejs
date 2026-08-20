@@ -381,6 +381,36 @@ def test_controls_replacement_adopts_spec_target(harness):
     harness.assert_clean()
 
 
+def test_quaternion_orients_objects(harness, track_ops):
+    """McStasScript orients components via quaternions: they must apply at
+    build and via delta updates. A long thin bar rotated 90 degrees about
+    Z reads vertical, then horizontal again after resetting to identity."""
+    half = float(np.sqrt(0.5))
+    mesh = p3.Mesh(
+        geometry=p3.BoxGeometry(2, 0.2, 0.2),
+        material=p3.MeshBasicMaterial(color="#ff0000"),
+        quaternion=(0.0, 0.0, half, half),  # 90 degrees about Z
+    )
+    scene = p3.Scene(children=[mesh], background="#ffffff")
+    camera = p3.PerspectiveCamera(position=[0, 0, 4], aspect=200 / 150)
+    renderer = p3.Renderer(scene=scene, camera=camera)
+    sent = track_ops(renderer)
+    harness.boot(renderer)
+
+    assert harness.object(mesh.uuid)["quaternion"] == pytest.approx(
+        [0.0, 0.0, half, half]
+    )
+    assert_color(harness.pixel(0.5, 0.7), 255, 0, 0)  # vertical bar
+    assert_color(harness.pixel(0.7, 0.5), 255, 255, 255)  # sides are empty
+
+    mesh.quaternion = (0.0, 0.0, 0.0, 1.0)
+    harness.apply(sent)
+
+    assert_color(harness.pixel(0.7, 0.5), 255, 0, 0)  # horizontal again
+    assert_color(harness.pixel(0.5, 0.7), 255, 255, 255)
+    harness.assert_clean()
+
+
 def test_edges_follow_source_geometry(harness, track_ops):
     """EdgesGeometry entries rebuild when their source geometry's
     positions change (previously a documented limitation: edges froze at

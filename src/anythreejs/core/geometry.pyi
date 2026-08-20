@@ -85,6 +85,20 @@ class CylinderGeometry(ThreeJSBase):
         **kwargs: Any,
     ) -> None: ...
 
+class CircleGeometry(ThreeJSBase):
+    radius: float
+    segments: int
+    thetaStart: float
+    thetaLength: float
+    def __init__(
+        self,
+        radius: float = ...,
+        segments: int = ...,
+        thetaStart: float = ...,
+        thetaLength: float = ...,
+        **kwargs: Any,
+    ) -> None: ...
+
 class TorusGeometry(ThreeJSBase):
     radius: float
     tube: float

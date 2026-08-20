@@ -275,6 +275,7 @@ const harness = {
     }
     if (obj.isObject3D) {
       out.position = obj.position.toArray();
+      out.quaternion = obj.quaternion.toArray();
       out.visible = obj.visible;
       out.children = obj.children.length;
     }

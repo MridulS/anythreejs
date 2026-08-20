@@ -84,6 +84,7 @@ const GEOMETRY_TYPES = new Set([
   "SphereGeometry",
   "PlaneGeometry",
   "CylinderGeometry",
+  "CircleGeometry",
   "TorusGeometry",
   "EdgesGeometry",
   "LineGeometry",
@@ -241,6 +242,9 @@ function applyTransform(obj, spec) {
     );
   }
   if (spec.scale) obj.scale.set(...spec.scale);
+  // Quaternion takes precedence over Euler rotation when both are set
+  // (pythreejs surface: McStasScript orients components via quaternions).
+  if (spec.quaternion) obj.quaternion.set(...spec.quaternion);
 }
 
 // ---------------------------------------------------------------------------
@@ -286,6 +290,14 @@ function buildGeometry(spec, world) {
         spec.radialSegments,
         spec.heightSegments,
         spec.openEnded,
+        spec.thetaStart,
+        spec.thetaLength
+      );
+
+    case "CircleGeometry":
+      return new THREE.CircleGeometry(
+        spec.radius,
+        spec.segments,
         spec.thetaStart,
         spec.thetaLength
       );
@@ -857,6 +869,8 @@ class World {
         event: spec.event || "click",
         controlling: spec.controlling ?? null,
         all: spec.all ?? false,
+        lineThreshold: spec.lineThreshold ?? null,
+        pointThreshold: spec.pointThreshold ?? null,
       });
     } else {
       this.controlSpecs.push(spec);
@@ -1135,6 +1149,9 @@ class World {
           break;
         case "rotationOrder":
           obj.rotation.order = value;
+          break;
+        case "quaternion":
+          if (Array.isArray(value)) obj.quaternion.set(...value);
           break;
         case "scale":
           obj.scale.set(...value);
@@ -1424,6 +1441,8 @@ class World {
       if ("event" in props) picker.event = props.event;
       if ("controlling" in props) picker.controlling = props.controlling;
       if ("all" in props) picker.all = props.all;
+      if ("lineThreshold" in props) picker.lineThreshold = props.lineThreshold;
+      if ("pointThreshold" in props) picker.pointThreshold = props.pointThreshold;
       return;
     }
     if ("target" in props && Array.isArray(props.target)) {
@@ -1698,6 +1717,8 @@ class View {
     if (!scene || !camera) return null;
     this.getMousePosition(event);
     this.raycaster.setFromCamera(this.mouse, camera);
+    this.raycaster.params.Line.threshold = 1;
+    this.raycaster.params.Points.threshold = 1;
     const intersects = this.raycaster.intersectObjects(this.pickableObjects(), false);
     if (intersects.length === 0) return null;
     const hit = intersects[0];
@@ -1718,6 +1739,9 @@ class View {
     if (!scene || !camera) return null;
     this.getMousePosition(event);
     this.raycaster.setFromCamera(this.mouse, camera);
+    // Per-picker raycast tolerances (pythreejs Picker surface).
+    this.raycaster.params.Line.threshold = picker.lineThreshold ?? 1;
+    this.raycaster.params.Points.threshold = picker.pointThreshold ?? 1;
 
     let pickable = [];
     if (picker.controlling) {
