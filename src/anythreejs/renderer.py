@@ -475,6 +475,19 @@ class Renderer(anywidget.AnyWidget):
         finally:
             self._end_batch()
 
+    def _on_invoke(self, obj: ThreeJSBase, method: str, args: list):
+        """Forward exec_three_obj_method to JS as an invoke op."""
+        if obj.uuid not in self._known:
+            return
+        self._queue(
+            {
+                "op": "invoke",
+                "uuid": obj.uuid,
+                "method": method,
+                "args": _json_safe(args),
+            }
+        )
+
     def _on_object_change(self, obj: ThreeJSBase, name: str, old, new):
         if (obj.uuid, name) in self._remote_props:
             return  # echo of a value JS just told us about

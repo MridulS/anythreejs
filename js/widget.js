@@ -1052,6 +1052,32 @@ class World {
         break;
       }
 
+      case "invoke": {
+        // pythreejs exec_three_obj_method: call a method on the JS-side
+        // object. Controls have per-view instances; everything else lives
+        // in the registry.
+        const args = resolveBuffers(op.args ?? [], buffers);
+        const spec = this.specs.get(op.uuid);
+        if (spec && CONTROL_TYPES.has(spec.type)) {
+          for (const view of this.views) {
+            if (
+              view.controlsUuid === op.uuid &&
+              typeof view.controls?.[op.method] === "function"
+            ) {
+              view.controls[op.method](...args);
+            }
+          }
+          break;
+        }
+        const target = this.objects.get(op.uuid);
+        if (target && typeof target[op.method] === "function") {
+          target[op.method](...args);
+        } else {
+          console.warn("anythreejs: invoke target/method missing", op.method);
+        }
+        break;
+      }
+
       case "remove":
         this.removeObject(op.uuid);
         break;

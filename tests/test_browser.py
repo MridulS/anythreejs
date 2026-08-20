@@ -381,6 +381,21 @@ def test_controls_replacement_adopts_spec_target(harness):
     harness.assert_clean()
 
 
+def test_exec_three_obj_method_invokes_in_browser(harness, track_ops):
+    """The invoke op must call real methods on registry objects and on the
+    per-view controls instances."""
+    renderer, mesh = box_fixture()
+    sent = track_ops(renderer)
+    harness.boot(renderer)
+
+    mesh.exec_three_obj_method("translateX", 1.5)
+    renderer.controls[0].exec_three_obj_method("update")
+    harness.apply(sent)
+
+    assert harness.object(mesh.uuid)["position"] == pytest.approx([1.5, 0.0, 0.0])
+    harness.assert_clean()
+
+
 def test_quaternion_orients_objects(harness, track_ops):
     """McStasScript orients components via quaternions: they must apply at
     build and via delta updates. A long thin bar rotated 90 degrees about

@@ -41,6 +41,45 @@ def test_hold_trait_notifications_batches_ops(track_ops):
     assert {op["uuid"] for op in ops_of(sent[0])} == {camera.uuid}
 
 
+def test_hold_sync_batches_ops_but_notifies_immediately(track_ops):
+    """ipywidgets Widget.hold_sync semantics: one outgoing message, but
+    observers fire during the block (unlike hold_trait_notifications).
+    McStasScript's camera navigator wraps camera+controls moves in it."""
+    camera = p3.PerspectiveCamera()
+    controls = p3.OrbitControls(controlling=camera)
+    renderer = p3.Renderer(scene=p3.Scene(), camera=camera, controls=[controls])
+    sent = track_ops(renderer)
+
+    seen = []
+    camera.observe(lambda change: seen.append(change["name"]), names=["position"])
+
+    with camera.hold_sync(), controls.hold_sync():
+        camera.position = [5.0, 4.0, 3.0]
+        assert seen == ["position"]  # observer fired inside the block
+        controls.target = [1.0, 0.0, 0.0]
+        assert sent == []  # nothing flushed yet
+
+    assert len(sent) == 1  # one message for both objects' ops
+    ops = ops_of(sent[0])
+    assert {op["uuid"] for op in ops} == {camera.uuid, controls.uuid}
+
+
+def test_exec_three_obj_method_emits_invoke_op(track_ops):
+    """pythreejs API: exec_three_obj_method invokes a method on the
+    JS-side object (McStasScript calls controls.update this way)."""
+    camera = p3.PerspectiveCamera()
+    controls = p3.OrbitControls(controlling=camera)
+    renderer = p3.Renderer(scene=p3.Scene(), camera=camera, controls=[controls])
+    sent = track_ops(renderer)
+
+    controls.exec_three_obj_method("update")
+
+    assert ops_of(sent[0]) == [
+        {"op": "invoke", "uuid": controls.uuid, "method": "update", "args": []}
+    ]
+    assert renderer._camera_epoch == renderer._epoch
+
+
 def test_nested_hold_releases_once(track_ops):
     camera = p3.PerspectiveCamera()
     renderer = p3.Renderer(scene=p3.Scene(), camera=camera)

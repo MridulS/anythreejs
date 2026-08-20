@@ -105,6 +105,29 @@ class ThreeJSBase:
                     for renderer in batched:
                         renderer._end_batch()
 
+    @contextmanager
+    def hold_sync(self):
+        """Batch outgoing sync into one message while observers still fire
+        immediately — the ipywidgets ``Widget.hold_sync`` semantics
+        (pythreejs objects are widgets, so downstream code like
+        McStasScript's camera navigator calls this on scene objects)."""
+        batched = tuple(self._renderers)
+        for renderer in batched:
+            renderer._begin_batch()
+        try:
+            yield
+        finally:
+            for renderer in batched:
+                renderer._end_batch()
+
+    def exec_three_obj_method(self, method_name: str, *args):
+        """Invoke a method on the JS-side three.js object (pythreejs API).
+
+        Arguments must be JSON-serializable; they are passed positionally.
+        Unknown methods warn in the browser console rather than raising."""
+        for renderer in tuple(self._renderers):
+            renderer._on_invoke(self, str(method_name), list(args))
+
     def _notify(self, name: str, old: Any, new: Any):
         """Notify observers and attached renderers of a property change."""
         if self._hold_depth > 0:
