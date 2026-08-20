@@ -1931,6 +1931,16 @@ export default {
   initialize({ model }) {
     const world = new World(model);
     model._anythreejsWorld = world;
+    // Delta ops sent while this module was still being fetched/imported
+    // never reached our listeners (Jupyter streams them right after the
+    // widget opens — plopp builds its whole scene that way). Announce
+    // readiness so the kernel resyncs the snapshot trait, which is
+    // stateful and therefore never lost.
+    try {
+      model.send({ kind: "ready" });
+    } catch (error) {
+      debug("ready handshake failed", error);
+    }
     return () => {
       world.dispose();
       delete model._anythreejsWorld;

@@ -165,6 +165,7 @@ class Renderer(anywidget.AnyWidget):
 
         self.observe(self._on_camera_state, names=["_camera_state"])
         self.observe(self._on_picker_event, names=["_picker_event"])
+        self.on_msg(self._on_frontend_msg)
 
     # ------------------------------------------------------------------
     # Roots and registry
@@ -624,6 +625,16 @@ class Renderer(anywidget.AnyWidget):
                         ctrl.target = data["target"]
         finally:
             self._remote_props = set()
+
+    def _on_frontend_msg(self, widget, content, buffers=None):
+        """A frontend World announces itself once its module has loaded.
+        Any delta ops sent before that moment were lost (custom messages
+        are fire-and-forget), so re-sync the full snapshot — the trait
+        channel is stateful and always delivered. Fresh widgets that never
+        emitted ops skip the rebuild."""
+        if isinstance(content, dict) and content.get("kind") == "ready":
+            if self._epoch > 0 or self._snapshot_dirty:
+                self._full_resync()
 
     def _on_picker_event(self, change):
         """Handle picker events from JavaScript."""

@@ -331,3 +331,30 @@ def test_scene_replacement_refreshes_snapshot(track_ops):
     state = renderer._scene_state
     assert state["scene"] == new_scene.uuid
     assert light.uuid in state["objects"]
+
+
+def test_frontend_ready_resyncs_missed_ops(track_ops):
+    """The Jupyter startup race: plopp streams its whole scene as delta ops
+    right after widget creation, while the browser is still importing the
+    bundle — those custom messages are lost. The frontend's "ready" message
+    must trigger a full snapshot resync so a late-loading World sees the
+    complete scene."""
+    scene = p3.Scene()
+    renderer = p3.Renderer(scene=scene, camera=p3.PerspectiveCamera())
+    track_ops(renderer)
+
+    mesh = p3.Mesh(p3.BoxGeometry(), p3.MeshBasicMaterial())
+    scene.add(mesh)  # travels as ops; snapshot trait is now stale
+    assert mesh.uuid not in renderer._scene_state["objects"]
+
+    renderer._on_frontend_msg(renderer, {"kind": "ready"})
+    assert mesh.uuid in renderer._scene_state["objects"]
+
+
+def test_frontend_ready_on_fresh_renderer_skips_rebuild(track_ops):
+    renderer = p3.Renderer(scene=p3.Scene(), camera=p3.PerspectiveCamera())
+    track_ops(renderer)
+    seq_before = renderer._resync_seq
+
+    renderer._on_frontend_msg(renderer, {"kind": "ready"})
+    assert renderer._resync_seq == seq_before

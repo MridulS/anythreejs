@@ -49,6 +49,10 @@ class FakeModel {
     this.pending = {};
   }
 
+  send(content) {
+    (this.sentMessages ??= []).push(content);
+  }
+
   on(event, callback) {
     if (!this.listeners.has(event)) this.listeners.set(event, []);
     this.listeners.get(event).push(callback);
