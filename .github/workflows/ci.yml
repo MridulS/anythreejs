@@ -75,7 +75,9 @@ jobs:
       - name: Fetch unmodified upstream plopp (imports pythreejs)
         run: git clone --depth 1 https://github.com/scipp/plopp upstream-plopp
       - name: Install upstream plopp and scientific deps
-        run: uv pip install -e ./upstream-plopp scipp xarray h5py pooch
+        run: |
+          uv pip install -e ./upstream-plopp scipp xarray h5py pooch
+          uv pip install --reinstall --no-deps -e .
       # tests/shims/pythreejs.py aliases pythreejs -> anythreejs, so this
       # runs upstream's own 3D suites, byte-for-byte unmodified, against us.
       - name: Run upstream 3D suites through the pythreejs shim
@@ -86,7 +88,7 @@ jobs:
           -q -W "ignore::PendingDeprecationWarning"
 
   matplotgl:
-    name: matplotgl compatibility gate
+    name: Drop-in gate (unmodified upstream matplotgl)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -95,14 +97,23 @@ jobs:
           enable-cache: true
       - name: Sync environment
         run: uv sync --group dev
-      - name: Fetch matplotgl (ported to anythreejs upstream)
+      # Upstream matplotgl still imports pythreejs; the shim aliases it to
+      # anythreejs (PYTHONPATH shadows the installed pythreejs), so this
+      # gates the drop-in claim exactly like the plopp job.
+      - name: Fetch unmodified upstream matplotgl
         run: git clone --depth 1 https://github.com/scipp/matplotgl external/matplotgl
-      - name: Install matplotgl
-        run: uv pip install -e ./external/matplotgl
-      - name: Integration tests
-        run: uv run --no-sync pytest tests/test_matplotgl_compat.py -q
-      - name: matplotgl's own test suite
-        run: uv run --no-sync pytest external/matplotgl/tests -q
+      - name: Install matplotgl and reassert local anythreejs
+        run: |
+          uv pip install -e ./external/matplotgl
+          uv pip install --reinstall --no-deps -e .
+      - name: Integration tests through the pythreejs shim
+        run: >-
+          PYTHONPATH=tests/shims uv run --no-sync pytest
+          tests/test_matplotgl_compat.py -q
+      - name: matplotgl's own test suite through the shim
+        run: >-
+          PYTHONPATH=tests/shims uv run --no-sync pytest
+          external/matplotgl/tests -q
 
   plopp:
     name: plopp compatibility gate
@@ -117,7 +128,9 @@ jobs:
       - name: Fetch plopp (anythreejs branch)
         run: git clone --depth 1 --branch anythreejs https://github.com/MridulS/plopp external/plopp
       - name: Install plopp and scientific deps
-        run: uv pip install -e ./external/plopp scipp xarray h5py pooch
+        run: |
+          uv pip install -e ./external/plopp scipp xarray h5py pooch
+          uv pip install --reinstall --no-deps -e .
       - name: Integration tests
         run: uv run --no-sync pytest tests/test_plopp_compat.py -q
       - name: plopp's own 3D test suites

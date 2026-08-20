@@ -190,19 +190,21 @@ def test_sustained_update_rate(harness, track_ops):
 
 
 def test_orbit_fps(harness):
-    """Effective frame rate while the camera auto-orbits a point cloud."""
-    renderer, _ = cloud_renderer(N_MEDIUM)
+    """Effective frame rate while the camera auto-orbits a point cloud.
+
+    10k points, not 100k: GitHub's 2-vCPU SwiftShader runners measured
+    1.6fps at 100k — below any bound that could also catch regressions.
+    At 10k the floor still trips on catastrophic per-frame regressions."""
+    renderer, _ = cloud_renderer(N_SMALL)
     harness.boot(renderer)
     harness.set_auto_rotate(True)
     result = harness.measure_fps(1000)
     harness.set_auto_rotate(False)
 
     report(
-        f"orbit fps, {N_MEDIUM:,} points (software WebGL)",
+        f"orbit fps, {N_SMALL:,} points (software WebGL)",
         fps=f"{result['fps']:.0f}",
         frames=result["frames"],
     )
-    # Floor set for 2-vCPU CI runners on SwiftShader; real GPUs are far
-    # higher. This only catches catastrophic regressions by design.
     assert result["fps"] >= 2
     harness.assert_clean()

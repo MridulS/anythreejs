@@ -1,5 +1,9 @@
-"""Integration tests: matplotgl (matplotlib-style 2D plotting on three.js,
-the vendored checkout in ``external/matplotgl``, ported to anythreejs).
+"""Integration tests: matplotgl (matplotlib-style 2D plotting on three.js).
+
+Locally these run against the vendored port in ``external/matplotgl``; in
+CI they run against *unmodified upstream* scipp/matplotgl (still
+pythreejs-importing) through the ``tests/shims`` alias — the port diff is
+six import lines, so both paths exercise the same code.
 
 matplotgl exercises the paths plopp doesn't: OrthographicCamera zoom/pan,
 ShaderMaterial scatter markers, and mousemove pickers. Its own 37-test
