@@ -219,6 +219,23 @@ function resolveBuffers(node, buffers) {
   return out;
 }
 
+
+/** Convert an sRGB-encoded color attribute to linear working space, in
+ * place. three.js r152+ interprets vertex colors as linear; Python-side
+ * colors come from matplotlib and are sRGB — without this, mid-tones
+ * render washed out (issue #3: 0.5 displayed as 188 instead of 128).
+ * Alpha components (every 4th value when itemSize is 4) pass through. */
+function srgbColorsToLinear(array, itemSize) {
+  const stride = itemSize === 4 ? 4 : itemSize;
+  const channels = Math.min(itemSize, 3);
+  for (let i = 0; i < array.length; i += stride) {
+    for (let c = 0; c < channels; c++) {
+      const v = array[i + c];
+      array[i + c] = v < 0.04045 ? v * 0.0773993808 : Math.pow((v + 0.055) / 1.055, 2.4);
+    }
+  }
+}
+
 /** Get the TypedArray for an attribute entry (wrapper or legacy forms). */
 function attributeArray(entry) {
   if (!entry) return null;
@@ -316,6 +333,10 @@ function buildGeometry(spec, world) {
       for (const [name, entry] of Object.entries(spec.attributes ?? {})) {
         const array = attributeArray(entry);
         if (array) {
+          if (name === "color" && !entry.__linear && array instanceof Float32Array) {
+            srgbColorsToLinear(array, entry.itemSize ?? 3);
+            entry.__linear = true;
+          }
           geometry.setAttribute(
             name,
             new THREE.BufferAttribute(
@@ -351,7 +372,17 @@ function buildGeometry(spec, world) {
       const positions = attributeArray(spec.positions) ?? flattenNested(spec.positions);
       if (positions) geometry.setPositions(positions);
       const colors = attributeArray(spec.colors) ?? flattenNested(spec.colors);
-      if (colors) geometry.setColors(colors);
+      if (colors) {
+        if (
+          spec.colors &&
+          !spec.colors.__linear &&
+          colors instanceof Float32Array
+        ) {
+          srgbColorsToLinear(colors, 3);
+          spec.colors.__linear = true;
+        }
+        geometry.setColors(colors);
+      }
       return geometry;
     }
 
@@ -1273,6 +1304,8 @@ class World {
       return;
     }
 
+    const itemSize = value.itemSize ?? 3;
+    const isColor = attribute === "color" && array instanceof Float32Array;
     const existing = geometry.getAttribute(attribute);
     if (
       existing &&
@@ -1280,8 +1313,13 @@ class World {
       existing.array.constructor === array.constructor
     ) {
       existing.array.set(array);
+      if (isColor) srgbColorsToLinear(existing.array, existing.itemSize);
       existing.needsUpdate = true;
     } else {
+      if (isColor && !value.__linear) {
+        srgbColorsToLinear(array, itemSize);
+        value.__linear = true;
+      }
       geometry.setAttribute(
         attribute,
         new THREE.BufferAttribute(
@@ -1395,6 +1433,7 @@ class World {
         const dst = i * 6;
         for (let c = 0; c < 6; c++) buffer[dst + c] = colors[src + c];
       }
+      srgbColorsToLinear(buffer, 3);
       colorStart.data.needsUpdate = true;
     }
     return true;

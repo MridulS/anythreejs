@@ -381,6 +381,64 @@ def test_controls_replacement_adopts_spec_target(harness):
     harness.assert_clean()
 
 
+def test_vertex_colors_are_treated_as_srgb(harness, track_ops):
+    """Issue #3: vertex colors come from matplotlib in sRGB, but three.js
+    r152+ interprets the attribute as linear — without conversion a 0.5
+    gray washed out to 188. It must render ~128, through both the build
+    path and the buffer-update path."""
+    n = 4
+    colors = np.full((n, 4), 0.5, dtype="float32")
+    colors[:, 3] = 1.0
+    attr = p3.BufferAttribute(colors, itemSize=4)
+    geometry = p3.BufferGeometry(
+        attributes={
+            "position": p3.BufferAttribute(np.zeros((n, 3), dtype="float32")),
+            "color": attr,
+        }
+    )
+    points = p3.Points(
+        geometry=geometry,
+        material=p3.PointsMaterial(size=100, vertexColors=True, sizeAttenuation=False),
+    )
+    scene = p3.Scene(children=[points], background="#000000")
+    renderer = p3.Renderer(scene=scene, camera=p3.PerspectiveCamera(position=[0, 0, 3]))
+    sent = track_ops(renderer)
+    harness.boot(renderer)
+
+    built = harness.pixel(0.5, 0.5)[0]
+    assert 110 < built < 146, built  # washed-out rendered 188
+
+    quarter = np.full((n, 4), 0.25, dtype="float32")
+    quarter[:, 3] = 1.0
+    attr.array = quarter
+    harness.apply(sent)
+
+    updated = harness.pixel(0.5, 0.5)[0]
+    assert 50 < updated < 80, updated  # washed-out rendered ~137
+
+
+def test_text_textures_are_square_by_default(harness):
+    """Issue #4: pythreejs draws text into a square canvas by default, so
+    a default-scale 1:1 sprite shows it unsquashed — plopp's axis labels
+    rely on that."""
+    assert p3.TextTexture().to_dict()["squareTexture"] is True
+
+    texture = p3.TextTexture(string="temperature", size=64)
+    sprite = p3.Sprite(material=p3.SpriteMaterial(map=texture, transparent=True))
+    scene = p3.Scene(children=[sprite], background="#000000")
+    renderer = p3.Renderer(scene=scene, camera=p3.PerspectiveCamera(position=[0, 0, 3]))
+    harness.boot(renderer)
+
+    dims = harness.page.evaluate(
+        f"""() => {{
+          const texture = window.harness.world.objects.get("{texture.uuid}");
+          return [texture.image.width, texture.image.height];
+        }}"""
+    )
+    assert dims[0] == dims[1]
+    harness.assert_clean()
+
+
 def test_exec_three_obj_method_invokes_in_browser(harness, track_ops):
     """The invoke op must call real methods on registry objects and on the
     per-view controls instances."""

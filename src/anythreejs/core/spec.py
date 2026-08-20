@@ -566,7 +566,9 @@ CATALOG: dict[str, dict] = {
             "color": {"default": "white", "kind": "css"},
             "size": {"default": 100},
             "fontFace": {"default": "Arial"},
-            "squareTexture": {"default": False},
+            # pythreejs default: text is drawn into a square canvas, so a
+            # default-scale 1:1 sprite shows it unsquashed (issue #4).
+            "squareTexture": {"default": True},
         },
     },
 }
